@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Slyce Virtual Printer Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Slyce Virtual Printer Demo</h1>
+      <p>Founder validation sandbox: supplier desktop + virtual print pipeline + Slyce inbox.</p>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Create Document</h2>
+        <form id="doc-form">
+          <label>Customer Name <input name="customerName" required /></label>
+          <label>Document Type
+            <select name="documentType">
+              <option>Invoice</option>
+              <option>Shipping Label</option>
+              <option>Packing Slip</option>
+            </select>
+          </label>
+          <label>Amount <input name="amount" type="number" min="0" step="0.01" required /></label>
+          <label>Notes <textarea name="notes" rows="2"></textarea></label>
+          <button type="submit">Print to Slyce</button>
+        </form>
+        <p id="form-status" class="status"></p>
+      </section>
+
+      <section class="card">
+        <h2>Simulation Control Panel</h2>
+        <form id="simulation-form">
+          <label>Latency (ms)
+            <input name="latencyMs" type="number" min="0" step="100" value="800" />
+          </label>
+          <label>Error Mode
+            <select name="failureMode">
+              <option value="none">None</option>
+              <option value="network">Force network errors</option>
+              <option value="pdf">Force PDF errors</option>
+              <option value="random">Random failures (35%)</option>
+            </select>
+          </label>
+          <button type="submit">Apply Simulation Settings</button>
+        </form>
+        <div class="row">
+          <button id="seed-data">Seed Demo Data</button>
+          <button id="run-queue">Run Queue Now</button>
+        </div>
+      </section>
+
+      <section class="card wide">
+        <h2>Transmission Status + Print Queue</h2>
+        <table id="queue-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Customer</th><th>Type</th><th>Amount</th><th>Status</th><th>Error</th><th>Inbox ID</th><th>Updated</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section class="card wide">
+        <h2>Slyce Inbox Viewer (Receiver Side)</h2>
+        <table id="inbox-table">
+          <thead>
+            <tr>
+              <th>Inbox ID</th><th>Job ID</th><th>Customer</th><th>Type</th><th>Amount</th><th>Notes</th><th>Received</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+
+      <section class="card wide">
+        <h2>Local Logs</h2>
+        <pre id="logs"></pre>
+      </section>
+    </main>
+
+    <script src="./renderer.js"></script>
+  </body>
+</html>

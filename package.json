@@ -1,0 +1,17 @@
+{
+  "name": "slyce-virtual-printer-mvp",
+  "version": "1.0.0",
+  "description": "Local MVP demo for Slyce virtual printer concept",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "start:backend": "node src/backend/standalone.js",
+    "seed": "node src/scripts/seed.js"
+  },
+  "dependencies": {
+    "electron": "^31.7.7",
+    "express": "^4.21.2",
+    "pdfkit": "^0.15.0",
+    "sqlite3": "^5.1.7"
+  }
+}
