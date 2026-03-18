@@ -1,0 +1,27 @@
+:root { font-family: Inter, Arial, sans-serif; color: #102a43; }
+* { box-sizing: border-box; }
+body { margin: 0; background: #f6f8fb; }
+.app { display: grid; grid-template-columns: 280px 1fr; min-height: 100vh; }
+aside { background: #0f172a; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+aside button { text-align: left; background: #1e293b; color: #e2e8f0; border: 0; border-radius: 8px; padding: 10px; cursor: pointer; }
+aside button.active { background: #2563eb; }
+main { padding: 16px; overflow: auto; }
+header { margin-bottom: 12px; }
+.cards { display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(160px, 1fr)); }
+.card { background: white; padding: 12px; border-radius: 10px; border: 1px solid #dbe2ea; }
+.card.full { grid-column: span 2; }
+.grid2 { display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(240px, 1fr)); }
+label { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+input, select, button { padding: 8px; border-radius: 8px; border: 1px solid #c7d2e0; }
+button { cursor: pointer; margin-right: 6px; }
+.lineRow { display: grid; grid-template-columns: 90px 1fr 80px 60px 90px 60px 140px; gap: 8px; margin-bottom: 8px; align-items: center; }
+.totals { margin: 10px 0; font-weight: 700; }
+table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #dbe2ea; }
+th, td { border-bottom: 1px solid #e6edf5; padding: 8px; font-size: 12px; text-align: left; }
+.loading { padding: 40px; }
+.statusBanner { background: #eff6ff; border: 1px solid #93c5fd; color: #1e3a8a; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+.modalOverlay { position: fixed; inset: 0; background: rgba(15,23,42,.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.modalCard { background: #fff; border-radius: 12px; width: 520px; max-width: calc(100vw - 24px); padding: 16px; border: 1px solid #dbe2ea; }
+.modalActions { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.modalActions .primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+.linkBtn { background: transparent; border: none; color: #334155; text-decoration: underline; padding: 0; }
