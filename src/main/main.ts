@@ -9,21 +9,36 @@ let mainWindow: BrowserWindow | null = null;
 let data: AppData;
 
 const createWindow = async () => {
+  const preloadPath = path.join(__dirname, 'preload.js');
+
   mainWindow = new BrowserWindow({
     width: 1450,
     height: 940,
     title: 'Slyce Virtual Printer Lab',
     webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
+      preload: preloadPath,
       contextIsolation: true,
       nodeIntegration: false
     }
   });
 
+  mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => {
+    console.error('[Electron] Renderer failed to load', { code, description, url });
+  });
+
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[Electron] Renderer process gone', details);
+  });
+
   if (!app.isPackaged) {
-    await mainWindow.loadURL('http://localhost:5173');
+    const devUrl = 'http://localhost:5173';
+    console.log('[Electron] Loading dev URL:', devUrl);
+    await mainWindow.loadURL(devUrl);
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
   } else {
-    await mainWindow.loadFile(path.join(__dirname, '../../dist/index.html'));
+    const indexPath = path.join(__dirname, '../../dist/index.html');
+    console.log('[Electron] Loading production file:', indexPath);
+    await mainWindow.loadFile(indexPath);
   }
 };
 
