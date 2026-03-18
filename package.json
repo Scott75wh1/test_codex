@@ -1,0 +1,70 @@
+{
+  "name": "slyce-virtual-printer-lab",
+  "version": "1.0.0",
+  "description": "Standalone desktop simulator for Slyce Virtual Printer workflow",
+  "main": "dist-electron/main/main.js",
+  "author": "Slyce Demo Team",
+  "license": "MIT",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on tcp:5173 dist-electron/main/main.js && electron .\"",
+    "build": "vite build && tsc -p tsconfig.electron.json",
+    "dist": "npm run build && electron-builder",
+    "dist:mac": "npm run build && electron-builder --mac dmg",
+    "dist:win": "npm run build && electron-builder --win nsis",
+    "check:structure": "node scripts/check-structure.js"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.13",
+    "pdf-lib": "^1.17.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/react": "^18.3.20",
+    "@types/react-dom": "^18.3.6",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "electron": "^35.0.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.8.2",
+    "vite": "^6.2.3",
+    "wait-on": "^8.0.3"
+  },
+  "build": {
+    "appId": "com.slyce.virtualprinterlab",
+    "productName": "Slyce Virtual Printer Lab",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        "dmg"
+      ],
+      "category": "public.app-category.business"
+    },
+    "dmg": {
+      "title": "Slyce Virtual Printer Lab"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
