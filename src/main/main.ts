@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, shell } from 'electron';
+import fs from 'fs';
 import path from 'path';
 import { generateRandomDocument } from '../modules/documentGenerator';
 import { runPdfOnly, runVirtualPrinterPipeline } from '../modules/printer';
@@ -9,7 +10,8 @@ let mainWindow: BrowserWindow | null = null;
 let data: AppData;
 
 const createWindow = async () => {
-  const preloadPath = path.join(__dirname, 'preload.js');
+  const isDev = !app.isPackaged;
+  const preloadPath = path.resolve(__dirname, 'preload.js');
 
   mainWindow = new BrowserWindow({
     width: 1450,
@@ -23,22 +25,33 @@ const createWindow = async () => {
   });
 
   mainWindow.webContents.on('did-fail-load', (_event, code, description, url) => {
-    console.error('[Electron] Renderer failed to load', { code, description, url });
+    console.error('[Electron] did-fail-load', { code, description, url });
   });
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    console.error('[Electron] Renderer process gone', details);
+    console.error('[Electron] render-process-gone', details);
   });
 
-  if (!app.isPackaged) {
-    const devUrl = 'http://localhost:5173';
-    console.log('[Electron] Loading dev URL:', devUrl);
-    await mainWindow.loadURL(devUrl);
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
-  } else {
-    const indexPath = path.join(__dirname, '../../dist/index.html');
-    console.log('[Electron] Loading production file:', indexPath);
+  try {
+    if (isDev) {
+      const devUrl = 'http://localhost:5173';
+      console.log('[Electron] DEV loadURL:', devUrl);
+      await mainWindow.loadURL(devUrl);
+      mainWindow.webContents.openDevTools({ mode: 'detach' });
+      return;
+    }
+
+    const indexPath = path.resolve(__dirname, '../../dist/index.html');
+    const exists = fs.existsSync(indexPath);
+    console.log('[Electron] PROD loadFile:', indexPath, 'exists=', exists, 'preload=', preloadPath);
+
+    if (!exists) {
+      throw new Error(`Missing renderer entry: ${indexPath}`);
+    }
+
     await mainWindow.loadFile(indexPath);
+  } catch (error) {
+    console.error('[Electron] Window load error', error);
   }
 };
 
