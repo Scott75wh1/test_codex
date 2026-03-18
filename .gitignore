@@ -1,0 +1,6 @@
+node_modules
+*.log
+data/*.sqlite
+data/inbox/*.pdf
+data/outbox/*
+logs/*.log
