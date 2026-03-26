@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telex QR Manager</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 1100px; margin: 0 auto; padding: 1rem; }
+      textarea { width: 100%; min-height: 280px; }
+      button { margin-top: 0.5rem; padding: 0.6rem 0.8rem; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+      @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+      #qrImage { max-width: 320px; width: 100%; border: 1px solid #ddd; }
+      pre { background: #f7f7f7; padding: 0.8rem; overflow: auto; }
+      label { display: block; margin-top: 0.6rem; font-weight: bold; }
+      input { width: 100%; padding: 0.4rem; }
+      video { width: 100%; max-width: 420px; border: 1px solid #ddd; }
+    </style>
+  </head>
+  <body>
+    <h1>Telex → QR (Backend + Scanner Frontend)</h1>
+    <div class="grid">
+      <section>
+        <h2>1) Genera QR dal telex</h2>
+        <textarea id="telexInput" placeholder="Incolla il telex qui..."></textarea>
+        <button id="generateBtn">Genera QR</button>
+        <p id="status"></p>
+        <img id="qrImage" alt="QR code del telex" />
+      </section>
+
+      <section>
+        <h2>2) Scanner QR da smartphone/webcam</h2>
+        <video id="video" autoplay muted playsinline></video>
+        <button id="startScanBtn">Avvia scanner</button>
+        <p id="scanStatus"></p>
+      </section>
+    </div>
+
+    <section>
+      <h2>Campi compilati da QR</h2>
+      <label>Booking Ref</label>
+      <input id="bookingRef" />
+      <label>Data</label>
+      <input id="telexDate" />
+      <label>Telefono</label>
+      <input id="phoneNumber" />
+      <label>Passeggeri</label>
+      <pre id="passengers"></pre>
+      <label>Voli</label>
+      <pre id="flights"></pre>
+      <label>Servizi</label>
+      <pre id="services"></pre>
+    </section>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
