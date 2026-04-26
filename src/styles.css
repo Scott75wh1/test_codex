@@ -1,121 +1,119 @@
 :root {
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-  color: #f2f5fa;
-  background: #05070f;
+  color: #edf2fa;
+  background: #040711;
 }
 
-* {
-  box-sizing: border-box;
-}
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
   min-height: 100vh;
-  background: radial-gradient(circle at top, #11182b 0%, #060915 45%, #04060d 100%);
+  background: radial-gradient(circle at top, #1a2644 0%, #080c18 48%, #04050c 100%);
 }
 
-#root {
-  min-height: 100vh;
-}
+#root { min-height: 100vh; }
 
 .app-shell {
-  max-width: 1300px;
+  max-width: 1380px;
   margin: 0 auto;
   padding: 1rem;
 }
 
 h1 {
   margin: 0;
-  font-size: clamp(1.4rem, 2.8vw, 2.2rem);
+  font-size: clamp(1.4rem, 2.5vw, 2.2rem);
 }
 
 .subtitle {
-  margin-top: 0.5rem;
-  margin-bottom: 1rem;
-  color: #b9c3d3;
+  margin: 0.45rem 0 1rem;
+  color: #bac7dc;
 }
 
 .controls {
-  display: flex;
-  flex-direction: column;
-  gap: 0.9rem;
-  background: #10182a;
-  border: 1px solid #2b3653;
+  display: grid;
+  gap: 0.8rem;
+  padding: 0.9rem;
   border-radius: 12px;
-  padding: 0.85rem;
+  border: 1px solid #2f3a59;
+  background: #10192b;
   margin-bottom: 1rem;
 }
 
 .controls-primary,
-.controls-secondary {
+.controls-secondary,
+.burn-controls {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
   align-items: center;
 }
 
-button {
-  background: #1a2742;
-  color: #e7edf7;
-  border: 1px solid #33486f;
+.burn-controls {
+  padding-top: 0.5rem;
+  border-top: 1px dashed #2a3550;
+}
+
+button,
+select,
+input[type='range'] {
+  background: #1b2a44;
+  color: #eef3fc;
+  border: 1px solid #3d547f;
   border-radius: 8px;
-  padding: 0.45rem 0.75rem;
+}
+
+button {
   cursor: pointer;
+  padding: 0.45rem 0.72rem;
 }
 
-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.active { background: #315fae; border-color: #7fb0ff; }
 
-button.active {
-  background: #2a539a;
-  border-color: #6ca6ff;
-}
+select { padding: 0.38rem 0.45rem; }
 
 label {
-  color: #cfd8ea;
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 0.35rem;
+  color: #d5deed;
 }
 
 .dashboard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 3fr) minmax(280px, 1fr);
+  grid-template-columns: minmax(0, 3fr) minmax(300px, 1fr);
   gap: 1rem;
 }
 
 .canvas-wrap {
-  background: #0a1120;
+  min-height: 560px;
   border-radius: 14px;
-  border: 1px solid #253551;
   overflow: hidden;
-  min-height: 520px;
+  border: 1px solid #2e3f63;
+  background: #060c18;
 }
 
 .sim-canvas {
   width: 100%;
+  min-height: 560px;
   height: 100%;
-  min-height: 520px;
   display: block;
 }
 
 .panel {
-  background: #0d1729;
-  border: 1px solid #2b3653;
   border-radius: 14px;
+  border: 1px solid #2d3a57;
+  background: #0f1728;
   padding: 1rem;
 }
 
-.panel h2 {
-  margin-top: 0;
-}
+.panel h2 { margin: 0 0 0.7rem; }
 
 .data-list {
   list-style: none;
-  padding: 0;
   margin: 0;
+  padding: 0;
   display: grid;
   gap: 0.65rem;
 }
@@ -123,56 +121,43 @@ label {
 .data-list li {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
-  color: #d4dceb;
+  gap: 0.7rem;
 }
 
 .alert {
   margin-top: 0.9rem;
-  border-left: 3px solid #ff7f7f;
-  padding-left: 0.6rem;
-  color: #ffd0d0;
+  padding: 0.5rem 0.7rem;
+  border-left: 3px solid #ff8b8b;
+  background: #351e2a;
+  color: #ffd6dd;
 }
 
 .timeline {
   margin-top: 1rem;
   display: grid;
+  gap: 0.75rem;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 0.7rem;
 }
 
 .timeline-item {
-  background: #0f1728;
-  border: 1px solid #2e3753;
   border-radius: 10px;
+  border: 1px solid #2f3b56;
+  background: #101728;
   padding: 0.7rem;
   opacity: 0.55;
 }
 
 .timeline-item.reached {
   opacity: 1;
-  border-color: #5f8ddd;
-  box-shadow: 0 0 0 1px #4068aa inset;
+  border-color: #6d95dc;
+  box-shadow: 0 0 0 1px #476aa8 inset;
 }
 
-.timeline-item h3 {
-  margin: 0 0 0.3rem;
-  font-size: 0.95rem;
-}
-
-.timeline-item p {
-  margin: 0;
-  color: #beccdf;
-  font-size: 0.88rem;
-}
+.timeline-item h3 { margin: 0 0 0.3rem; font-size: 0.95rem; }
+.timeline-item p { margin: 0 0 0.3rem; color: #bfcbdf; font-size: 0.88rem; }
+.timeline-item small { color: #9fb1d1; }
 
 @media (max-width: 980px) {
-  .dashboard-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .canvas-wrap,
-  .sim-canvas {
-    min-height: 420px;
-  }
+  .dashboard-grid { grid-template-columns: 1fr; }
+  .canvas-wrap, .sim-canvas { min-height: 430px; }
 }

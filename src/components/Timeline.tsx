@@ -11,11 +11,12 @@ export function Timeline({ state }: Props) {
   return (
     <section className="timeline" aria-label="Mission timeline">
       {events.map((event) => {
-        const reached = state.mission.missionTime >= event.triggerMissionTime;
+        const reached = state.mission.activeEventIds.includes(event.id);
         return (
           <article key={event.id} className={`timeline-item ${reached ? 'reached' : ''}`}>
             <h3>{event.label}</h3>
             <p>{event.description}</p>
+            <small>T+ {Math.round(event.triggerMissionTime / 3600)}h</small>
           </article>
         );
       })}

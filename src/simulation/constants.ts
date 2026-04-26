@@ -12,12 +12,12 @@ export const APOLLO_MASS = 44_069;
 export const PARKING_ORBIT_ALTITUDE = 185_000;
 export const EARTH_PARKING_ORBIT_SPEED = 7_780;
 
-export const DEFAULT_SIM_DT = 4;
+export const DEFAULT_SIM_DT = 2;
+export const PHYSICS_SUBSTEPS = 3;
 
-// Graphic scale: 1 pixel = 2,500 km
-export const METERS_PER_PIXEL = 2_500_000;
-
-export const MAX_TRAIL_POINTS = 800;
+// Graphic scale normalized for education while keeping SI physics
+export const METERS_PER_PIXEL = 1_800_000;
+export const MAX_TRAIL_POINTS = 1200;
 
 export const INITIAL_FUEL = 100;
 export const INITIAL_ENERGY = 100;

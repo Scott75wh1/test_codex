@@ -1,7 +1,6 @@
-export type Vector2 = {
-  x: number;
-  y: number;
-};
+export type Vector2 = { x: number; y: number };
+
+export type BurnDirection = 'prograde' | 'retrograde' | 'normalToEarth' | 'toEarth';
 
 export type MissionPhase =
   | 'Launch'
@@ -31,6 +30,7 @@ export type MissionEvent = {
   label: string;
   description: string;
   triggerMissionTime: number;
+  phase: MissionPhase;
 };
 
 export type SpaceBody = {
@@ -54,6 +54,7 @@ export type MissionStatus = {
   crewStatus: string;
   serviceModuleOnline: boolean;
   explosionTriggered: boolean;
+  activeEventIds: MissionEventId[];
 };
 
 export type SimulationState = {
@@ -67,4 +68,8 @@ export type SimulationState = {
   showGravityFields: boolean;
 };
 
-export type BurnDirection = 'prograde' | 'retrograde' | 'normalToEarth' | 'toEarth';
+export type Telemetry = {
+  distanceEarth: number;
+  distanceMoon: number;
+  speed: number;
+};
