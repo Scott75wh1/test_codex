@@ -11,6 +11,25 @@ npm run dev:apollo
 
 Apri: `http://localhost:5188`
 
+## Script di lancio rapido (macOS/Linux)
+
+È incluso `launch_apollo13.sh` con percorso preimpostato a:
+
+`/Users/cristian/Downloads/Apollo 13`
+
+Uso:
+
+```bash
+chmod +x launch_apollo13.sh
+./launch_apollo13.sh
+```
+
+Lo script:
+- verifica che la cartella esista
+- verifica che `npm` sia disponibile
+- esegue `npm install` solo se `node_modules` manca
+- avvia `npm run dev:apollo`
+
 ## Script disponibili
 
 - `npm run dev` → sviluppo Vite (porta fissata in `vite.config.ts`)
