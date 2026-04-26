@@ -170,3 +170,13 @@ Il simulatore è intenzionalmente semplificato:
 - eventi missione educativi (non replica NASA 1:1)
 
 Obiettivo: comprendere concetti di gravità, correzione di rotta, free-return e flyby lunare.
+
+
+## 11) Scenari di simulazione
+
+Nel selettore **Scenario** puoi scegliere:
+
+- **Nominal Apollo 13**: profilo standard con eventi in sequenza temporale didattica.
+- **Early Explosion**: emergenza anticipata per allenare abort e free-return.
+- **Fuel Critical Return**: risorse ridotte, richiede burn più efficienti.
+- **Manual Burn Training**: scenario libero per sperimentazione manuale.

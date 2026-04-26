@@ -3,18 +3,20 @@ import { Controls } from './components/Controls';
 import { MissionPanel } from './components/MissionPanel';
 import { SimulationCanvas } from './components/SimulationCanvas';
 import { Timeline } from './components/Timeline';
-import { applyBurn, computePlannedPath, createInitialState, stepSimulation, triggerFreeReturnCorrection, triggerOxygenExplosion } from './simulation/physics';
-import type { BurnDirection, SimulationState } from './simulation/types';
+import { applyBurn, computePlannedPath, createInitialState, getScenarios, stepSimulation, triggerFreeReturnCorrection, triggerOxygenExplosion } from './simulation/physics';
+import type { BurnDirection, ScenarioId, SimulationState } from './simulation/types';
 
 const TICK_MS = 16;
 
 export default function App() {
-  const [state, setState] = useState<SimulationState>(() => createInitialState());
+  const [scenarioId, setScenarioId] = useState<ScenarioId>('nominal');
+  const [state, setState] = useState<SimulationState>(() => createInitialState('nominal'));
   const [running, setRunning] = useState(false);
   const [speedMultiplier, setSpeedMultiplier] = useState(1);
   const [burnDirection, setBurnDirection] = useState<BurnDirection>('prograde');
   const [burnDeltaV, setBurnDeltaV] = useState(65);
   const explosionAlertShown = useRef(false);
+  const scenarios = useMemo(() => getScenarios(), []);
 
   useEffect(() => {
     if (!running) return undefined;
@@ -42,11 +44,22 @@ export default function App() {
   const plannedPath = useMemo(() => computePlannedPath(state), [state.capsule.position, state.capsule.velocity]);
   const composedState = useMemo(() => ({ ...state, plannedPath }), [state, plannedPath]);
 
+  const selectedScenario = scenarios.find((scenario) => scenario.id === scenarioId);
+
+  const resetScenario = (nextScenario: ScenarioId = scenarioId) => {
+    explosionAlertShown.current = false;
+    setRunning(false);
+    setState(createInitialState(nextScenario));
+    setSpeedMultiplier(1);
+    setBurnDirection('prograde');
+    setBurnDeltaV(65);
+  };
+
   return (
     <div className="app-shell">
-      <h1>Apollo 13 Launch &amp; Lunar Flyby Simulator — v2</h1>
+      <h1>Apollo 13 Launch &amp; Lunar Flyby Simulator — v3</h1>
       <p className="subtitle">
-        Educational model in SI units with normalized rendering. Apollo 13 launched on April 11, 1970.
+        Simulazione educativa in unità SI con scenari guidati: launch, emergenza, free-return e rientro.
       </p>
 
       <Controls
@@ -56,16 +69,11 @@ export default function App() {
         showGravityFields={state.showGravityFields}
         burnDirection={burnDirection}
         burnDeltaV={burnDeltaV}
+        scenarios={scenarios}
+        selectedScenario={scenarioId}
         onStart={() => setRunning(true)}
         onPause={() => setRunning(false)}
-        onReset={() => {
-          explosionAlertShown.current = false;
-          setRunning(false);
-          setState(createInitialState());
-          setSpeedMultiplier(1);
-          setBurnDirection('prograde');
-          setBurnDeltaV(65);
-        }}
+        onReset={() => resetScenario()}
         onSpeedChange={setSpeedMultiplier}
         onToggleVectors={() => setState((prev) => ({ ...prev, showVectors: !prev.showVectors }))}
         onToggleGravity={() => setState((prev) => ({ ...prev, showGravityFields: !prev.showGravityFields }))}
@@ -74,7 +82,18 @@ export default function App() {
         onManualBurn={() => setState((prev) => applyBurn(prev, burnDirection, burnDeltaV))}
         onBurnDirectionChange={setBurnDirection}
         onBurnDeltaVChange={setBurnDeltaV}
+        onScenarioChange={(nextScenario) => {
+          setScenarioId(nextScenario);
+          resetScenario(nextScenario);
+        }}
       />
+
+      {selectedScenario && (
+        <div className="scenario-card">
+          <strong>{selectedScenario.name}</strong>
+          <p>{selectedScenario.description}</p>
+        </div>
+      )}
 
       <main className="dashboard-grid">
         <section className="canvas-wrap">

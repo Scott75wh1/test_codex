@@ -14,7 +14,7 @@ import {
   PARKING_ORBIT_ALTITUDE,
   PHYSICS_SUBSTEPS,
 } from './constants';
-import type { BurnDirection, MissionEvent, MissionEventId, SimulationState, Telemetry, Vector2 } from './types';
+import type { BurnDirection, MissionEvent, MissionEventId, Scenario, ScenarioId, SimulationState, Telemetry, Vector2 } from './types';
 
 const MISSION_EVENTS: MissionEvent[] = [
   { id: 'launch', label: 'Launch', description: 'Saturn V lifts off from Kennedy Space Center.', triggerMissionTime: 0, phase: 'Launch' },
@@ -77,6 +77,15 @@ const MISSION_EVENTS: MissionEvent[] = [
 ];
 
 export const getMissionEvents = () => MISSION_EVENTS;
+const SCENARIOS: Scenario[] = [
+  { id: 'nominal', name: 'Nominal Apollo 13', description: 'Profilo standard didattico: evento esplosione ai tempi storici simulati.' },
+  { id: 'early-explosion', name: 'Early Explosion', description: 'Emergenza anticipata: test delle procedure di abort e free-return.' },
+  { id: 'fuel-critical', name: 'Fuel Critical Return', description: 'Riserva carburante ridotta: richiede burn più attenti.' },
+  { id: 'manual-training', name: 'Manual Burn Training', description: 'Scenario libero per sperimentare burn manuali e vettori.' },
+];
+
+export const getScenarios = (): Scenario[] => SCENARIOS;
+
 
 const magnitude = (v: Vector2) => Math.hypot(v.x, v.y);
 const add = (a: Vector2, b: Vector2): Vector2 => ({ x: a.x + b.x, y: a.y + b.y });
@@ -127,9 +136,10 @@ const updateMissionFromTime = (mission: SimulationState['mission'], missionTime:
   };
 };
 
-export const createInitialState = (): SimulationState => {
+export const createInitialState = (scenarioId: ScenarioId = 'nominal'): SimulationState => {
   const initialPosition = { x: 0, y: EARTH_RADIUS + PARKING_ORBIT_ALTITUDE };
-  return {
+
+  const base: SimulationState = {
     earth: { position: { x: 0, y: 0 }, mass: EARTH_MASS, radius: EARTH_RADIUS },
     moon: { position: { x: EARTH_MOON_DISTANCE, y: 0 }, mass: MOON_MASS, radius: MOON_RADIUS },
     capsule: {
@@ -147,12 +157,40 @@ export const createInitialState = (): SimulationState => {
       serviceModuleOnline: true,
       explosionTriggered: false,
       activeEventIds: ['launch'],
+      scenarioId,
     },
     plannedPath: [initialPosition],
     actualPath: [initialPosition],
     showVectors: false,
     showGravityFields: false,
   };
+
+  if (scenarioId === 'fuel-critical') {
+    base.mission.fuel = 58;
+    base.mission.energy = 78;
+  }
+
+  if (scenarioId === 'manual-training') {
+    base.mission.phase = 'Mid-course Correction';
+    base.mission.missionTime = 90_000;
+    base.capsule.position = { x: 120_000_000, y: 40_000_000 };
+    base.capsule.velocity = { x: 950, y: 980 };
+    base.plannedPath = [base.capsule.position];
+    base.actualPath = [base.capsule.position];
+    base.mission.activeEventIds = ['launch', 'parkingOrbit', 'tli', 'midCourseCorrection'];
+  }
+
+  if (scenarioId === 'early-explosion') {
+    base.mission.missionTime = 70_000;
+    base.mission.phase = 'Translunar Injection';
+    base.capsule.position = { x: 95_000_000, y: 20_000_000 };
+    base.capsule.velocity = { x: 1200, y: 1450 };
+    base.plannedPath = [base.capsule.position];
+    base.actualPath = [base.capsule.position];
+    base.mission.activeEventIds = ['launch', 'parkingOrbit', 'tli'];
+  }
+
+  return base;
 };
 
 export const computePlannedPath = (state: SimulationState, points = 500): Vector2[] => {
@@ -254,7 +292,8 @@ export const stepSimulation = (state: SimulationState, dt = DEFAULT_SIM_DT): Sim
   const missionTime = state.mission.missionTime + dt;
   let mission = updateMissionFromTime(state.mission, missionTime);
 
-  if (isEventReached('oxygenExplosion', missionTime) && !mission.explosionTriggered) {
+  const shouldAutoExplosion = mission.scenarioId !== 'manual-training' && (isEventReached('oxygenExplosion', missionTime) || (mission.scenarioId === 'early-explosion' && missionTime >= 90_000));
+  if (shouldAutoExplosion && !mission.explosionTriggered) {
     const exploded = triggerOxygenExplosion({
       ...state,
       capsule: { ...state.capsule, position, velocity, acceleration },

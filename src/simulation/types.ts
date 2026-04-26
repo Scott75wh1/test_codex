@@ -2,6 +2,14 @@ export type Vector2 = { x: number; y: number };
 
 export type BurnDirection = 'prograde' | 'retrograde' | 'normalToEarth' | 'toEarth';
 
+export type ScenarioId = 'nominal' | 'early-explosion' | 'fuel-critical' | 'manual-training';
+
+export type Scenario = {
+  id: ScenarioId;
+  name: string;
+  description: string;
+};
+
 export type MissionPhase =
   | 'Launch'
   | 'Earth Parking Orbit'
@@ -55,6 +63,7 @@ export type MissionStatus = {
   serviceModuleOnline: boolean;
   explosionTriggered: boolean;
   activeEventIds: MissionEventId[];
+  scenarioId: ScenarioId;
 };
 
 export type SimulationState = {

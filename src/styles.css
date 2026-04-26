@@ -161,3 +161,21 @@ label {
   .dashboard-grid { grid-template-columns: 1fr; }
   .canvas-wrap, .sim-canvas { min-height: 430px; }
 }
+
+
+.scenario-card {
+  margin-bottom: 1rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: 10px;
+  border: 1px solid #38507e;
+  background: linear-gradient(90deg, #13213a, #11192d);
+}
+
+.scenario-card strong { display: block; color: #eef4ff; }
+.scenario-card p { margin: 0.2rem 0 0; color: #bdd0ee; }
+
+.scenario-label {
+  margin: -0.3rem 0 0.7rem;
+  color: #9fbae7;
+  font-size: 0.9rem;
+}

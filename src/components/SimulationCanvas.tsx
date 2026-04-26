@@ -43,7 +43,10 @@ export function SimulationCanvas({ state }: Props) {
     const height = rect.height;
     const origin = { x: width * 0.18, y: height * 0.5 };
 
-    ctx.fillStyle = '#050913';
+    const gradient = ctx.createLinearGradient(0, 0, width, height);
+    gradient.addColorStop(0, '#050913');
+    gradient.addColorStop(1, '#03050c');
+    ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
     for (let i = 0; i < 180; i += 1) {
@@ -74,16 +77,21 @@ export function SimulationCanvas({ state }: Props) {
     const moon = toCanvas(origin, state.moon.position);
     const capsule = toCanvas(origin, state.capsule.position);
 
+    ctx.shadowColor = '#3d85ff';
+    ctx.shadowBlur = 12;
     ctx.beginPath();
     ctx.arc(earth.x, earth.y, 14, 0, Math.PI * 2);
     ctx.fillStyle = '#3478ff';
     ctx.fill();
 
+    ctx.shadowColor = '#d2d6dc';
+    ctx.shadowBlur = 7;
     ctx.beginPath();
     ctx.arc(moon.x, moon.y, 7, 0, Math.PI * 2);
     ctx.fillStyle = '#aeb6c3';
     ctx.fill();
 
+    ctx.shadowBlur = 0;
     const heading = Math.atan2(state.capsule.velocity.y, state.capsule.velocity.x);
     ctx.save();
     ctx.translate(capsule.x, capsule.y);
@@ -111,6 +119,12 @@ export function SimulationCanvas({ state }: Props) {
       ctx.strokeStyle = '#ff7a9b';
       ctx.stroke();
     }
+
+    ctx.fillStyle = '#c9d6ea';
+    ctx.font = '12px Inter, sans-serif';
+    ctx.fillText('Earth', earth.x - 14, earth.y + 28);
+    ctx.fillText('Moon', moon.x - 12, moon.y + 22);
+    ctx.fillText('Apollo', capsule.x + 8, capsule.y - 8);
 
     ctx.fillStyle = '#d4dced';
     ctx.font = '12px Inter, sans-serif';

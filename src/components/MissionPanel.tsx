@@ -1,14 +1,16 @@
-import { computeTelemetry, formatMissionTime } from '../simulation/physics';
+import { computeTelemetry, formatMissionTime, getScenarios } from '../simulation/physics';
 import type { SimulationState } from '../simulation/types';
 
 type Props = { state: SimulationState };
 
 export function MissionPanel({ state }: Props) {
   const telemetry = computeTelemetry(state);
+  const scenario = getScenarios().find((item) => item.id === state.mission.scenarioId);
 
   return (
     <aside className="panel">
       <h2>Mission Data</h2>
+      {scenario && <p className="scenario-label">Scenario: {scenario.name}</p>}
       <ul className="data-list">
         <li><span>Mission Time</span><strong>{formatMissionTime(state.mission.missionTime)}</strong></li>
         <li><span>Distance from Earth</span><strong>{(telemetry.distanceEarth / 1000).toLocaleString()} km</strong></li>

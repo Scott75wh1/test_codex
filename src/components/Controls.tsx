@@ -1,5 +1,5 @@
 import { SPEED_MULTIPLIERS } from '../simulation/constants';
-import type { BurnDirection } from '../simulation/types';
+import type { BurnDirection, Scenario, ScenarioId } from '../simulation/types';
 
 type Props = {
   running: boolean;
@@ -8,6 +8,8 @@ type Props = {
   showGravityFields: boolean;
   burnDirection: BurnDirection;
   burnDeltaV: number;
+  scenarios: Scenario[];
+  selectedScenario: ScenarioId;
   onStart: () => void;
   onPause: () => void;
   onReset: () => void;
@@ -19,6 +21,7 @@ type Props = {
   onFreeReturnBurn: () => void;
   onBurnDirectionChange: (value: BurnDirection) => void;
   onBurnDeltaVChange: (value: number) => void;
+  onScenarioChange: (value: ScenarioId) => void;
 };
 
 export function Controls(props: Props) {
@@ -29,6 +32,8 @@ export function Controls(props: Props) {
     showGravityFields,
     burnDirection,
     burnDeltaV,
+    scenarios,
+    selectedScenario,
     onStart,
     onPause,
     onReset,
@@ -40,6 +45,7 @@ export function Controls(props: Props) {
     onFreeReturnBurn,
     onBurnDirectionChange,
     onBurnDeltaVChange,
+    onScenarioChange,
   } = props;
 
   return (
@@ -47,12 +53,21 @@ export function Controls(props: Props) {
       <div className="controls-primary">
         <button onClick={onStart} disabled={running}>Start simulation</button>
         <button onClick={onPause} disabled={!running}>Pause</button>
-        <button onClick={onReset}>Reset</button>
+        <button onClick={onReset}>Reset scenario</button>
         <button onClick={onTriggerExplosion}>Trigger oxygen tank explosion</button>
         <button onClick={onFreeReturnBurn}>Apply free-return correction burn</button>
       </div>
 
       <div className="controls-secondary">
+        <label>
+          Scenario
+          <select value={selectedScenario} onChange={(e) => onScenarioChange(e.target.value as ScenarioId)}>
+            {scenarios.map((scenario) => (
+              <option key={scenario.id} value={scenario.id}>{scenario.name}</option>
+            ))}
+          </select>
+        </label>
+
         <div className="segmented">
           {SPEED_MULTIPLIERS.map((multiplier) => (
             <button
