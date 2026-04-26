@@ -51,3 +51,8 @@ Lo script:
 4. Build command: `npm run build`
 5. Output directory: `dist`
 6. Deploy.
+
+
+## Manuale
+
+Per istruzioni complete consulta `MANUALE_UTILIZZO.md`.
