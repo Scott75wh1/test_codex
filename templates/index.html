@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Telex QR Manager - Demo</title>
+    <style>
+      body { font-family: Arial, sans-serif; max-width: 1100px; margin: 0 auto; padding: 1rem; }
+      textarea { width: 100%; min-height: 260px; }
+      button { margin-top: 0.5rem; padding: 0.6rem 0.8rem; margin-right: 0.4rem; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+      @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+      #qrImage { max-width: 320px; width: 100%; border: 1px solid #ddd; }
+      pre { background: #f7f7f7; padding: 0.8rem; overflow: auto; }
+      label { display: block; margin-top: 0.6rem; font-weight: bold; }
+      input { width: 100%; padding: 0.4rem; }
+      video { width: 100%; max-width: 420px; border: 1px solid #ddd; }
+      .hint { background: #eef6ff; border: 1px solid #d8e9ff; padding: 0.6rem; border-radius: 6px; }
+      .two-col { display:grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+      @media (max-width: 700px) { .two-col { grid-template-columns: 1fr; } }
+    </style>
+  </head>
+  <body>
+    <h1>Telex → QR Demo</h1>
+    <p class="hint">
+      Demo pronta: clicca <strong>Carica Telex Demo</strong>, poi <strong>Genera QR</strong>. Da smartphone puoi usare
+      <strong>Avvia scanner</strong> per compilare automaticamente i campi.
+    </p>
+
+    <div class="grid">
+      <section>
+        <h2>1) Genera QR dal telex</h2>
+        <textarea id="telexInput" placeholder="Incolla il telex qui..."></textarea>
+        <div>
+          <button id="loadDemoBtn">Carica Telex Demo</button>
+          <button id="generateBtn">Genera QR</button>
+          <button id="downloadQrBtn">Scarica QR PNG</button>
+        </div>
+        <p id="status"></p>
+        <img id="qrImage" alt="QR code del telex" />
+      </section>
+
+      <section>
+        <h2>2) Scanner QR da smartphone/webcam</h2>
+        <video id="video" autoplay muted playsinline></video>
+        <div>
+          <button id="startScanBtn">Avvia scanner</button>
+        </div>
+        <p id="scanStatus"></p>
+      </section>
+    </div>
+
+    <section class="two-col">
+      <div>
+        <h2>Campi compilati da QR</h2>
+        <label>Booking Ref</label>
+        <input id="bookingRef" />
+        <label>Data</label>
+        <input id="telexDate" />
+        <label>Telefono</label>
+        <input id="phoneNumber" />
+        <label>Passeggeri</label>
+        <pre id="passengers"></pre>
+      </div>
+      <div>
+        <h2>Dettagli viaggio</h2>
+        <label>Voli</label>
+        <pre id="flights"></pre>
+        <label>Servizi</label>
+        <pre id="services"></pre>
+        <label>Payload QR (JSON)</label>
+        <pre id="qrPayload"></pre>
+      </div>
+    </section>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
