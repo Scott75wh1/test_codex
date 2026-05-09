@@ -15,7 +15,7 @@ const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
 const BOSE_PORT = 8090;
 const REQUEST_TIMEOUT_MS = Number(process.env.BOSE_REQUEST_TIMEOUT_MS ?? 6000);
-const ALLOWED_KEYS = new Set(['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN']);
+const ALLOWED_KEYS = new Set(['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN', 'PRESET_1', 'PRESET_2', 'PRESET_3', 'PRESET_4', 'PRESET_5', 'PRESET_6', 'ADD_FAVORITE', 'REMOVE_FAVORITE']);
 const KEY_SENDER = 'Gabbo';
 const KEY_RELEASE_DELAY_MS = 100;
 
@@ -142,7 +142,7 @@ function parseBoseInfoXml(xml) {
 
 function parseSoundTouchRealtimeXml(xml) {
   const rootTag = xml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1] ?? 'raw';
-  const knownEvents = ['nowPlayingUpdated', 'volumeUpdated', 'presetsUpdated', 'infoUpdated', 'connectionStateUpdated'];
+  const knownEvents = ['nowPlayingUpdated', 'nowSelectionUpdated', 'volumeUpdated', 'presetsUpdated', 'infoUpdated', 'connectionStateUpdated'];
   const eventName = knownEvents.find((name) => new RegExp(`<${name}\\b`, 'i').test(xml)) ?? rootTag;
   const nowPlayingXml = xml.match(/<nowPlayingUpdated\b[\s\S]*?<\/nowPlayingUpdated>/i)?.[0]
     ?? xml.match(/<nowPlaying\b[\s\S]*?<\/nowPlaying>/i)?.[0]
@@ -284,6 +284,46 @@ async function fetchSoundTouch(ip, endpoint, options = {}) {
 
 function sendXml(res, result) {
   res.status(result.status).type(result.contentType).send(result.body);
+}
+
+async function fetchSoundTouchExperimental(ip, endpoint) {
+  const targetIp = sanitizeIp(ip);
+  if (!targetIp) {
+    const error = new Error('Indirizzo IP Bose mancante o non valido.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(soundTouchUrl(targetIp, endpoint), {
+      signal: controller.signal,
+      headers: { Accept: 'application/xml, text/xml, */*' }
+    });
+    const body = await response.text();
+
+    return {
+      endpoint,
+      status: response.status,
+      ok: response.ok,
+      contentType: response.headers.get('content-type') ?? 'application/xml',
+      body
+    };
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      return { endpoint, status: 504, ok: false, contentType: 'text/plain', body: `Timeout dopo ${REQUEST_TIMEOUT_MS} ms verso Bose SoundTouch.` };
+    }
+
+    return { endpoint, status: 502, ok: false, contentType: 'text/plain', body: error.message ?? 'Errore proxy SoundTouch.' };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+function sendExperimentalEndpoint(res, result) {
+  res.status(result.status).json(result);
 }
 
 function wait(ms) {
@@ -530,6 +570,38 @@ app.get('/api/bose/:ip/presets', async (req, res, next) => {
 app.get('/api/bose/:ip/sources', async (req, res, next) => {
   try {
     sendXml(res, await fetchSoundTouch(req.params.ip, '/sources'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/bose/:ip/recents', async (req, res, next) => {
+  try {
+    sendExperimentalEndpoint(res, await fetchSoundTouchExperimental(req.params.ip, '/recents'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/bose/:ip/capabilities', async (req, res, next) => {
+  try {
+    sendExperimentalEndpoint(res, await fetchSoundTouchExperimental(req.params.ip, '/capabilities'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/bose/:ip/now_selection', async (req, res, next) => {
+  try {
+    sendExperimentalEndpoint(res, await fetchSoundTouchExperimental(req.params.ip, '/now_selection'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/bose/:ip/now-selection', async (req, res, next) => {
+  try {
+    sendExperimentalEndpoint(res, await fetchSoundTouchExperimental(req.params.ip, '/now_selection'));
   } catch (error) {
     next(error);
   }

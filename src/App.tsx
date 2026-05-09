@@ -142,6 +142,43 @@ type LocalRadioTestResult = {
   outcome: 'pending' | 'success' | 'failed' | 'error';
 };
 
+type PresetLabCommand = 'PRESET_1' | 'PRESET_2' | 'PRESET_3' | 'PRESET_4' | 'PRESET_5' | 'PRESET_6' | 'ADD_FAVORITE' | 'REMOVE_FAVORITE' | 'RECENTS' | 'CAPABILITIES' | 'NOW_SELECTION';
+
+type PresetLabPoll = {
+  delayMs: number;
+  timestamp: string;
+  httpStatus: number | null;
+  nowPlayingXml: string;
+  parsed: ReturnType<typeof parseRestSnapshot>;
+};
+
+type ExperimentalEndpointResult = {
+  endpoint: string;
+  status: number;
+  ok: boolean;
+  contentType: string;
+  body: string;
+};
+
+type PresetResearchSnapshot = {
+  httpStatus: number | null;
+  rawXml: string;
+  parsed: ReturnType<typeof parsePresetResearchXml>;
+};
+
+type PresetLabExperiment = {
+  timestamp: string;
+  command: PresetLabCommand;
+  responseBose: string;
+  nowPlayingBefore?: PresetLabPoll;
+  nowPlayingAfter: PresetLabPoll[];
+  presetsBefore?: PresetResearchSnapshot;
+  presetsAfter?: PresetResearchSnapshot;
+  websocketEvents: RealtimeEvent[];
+  errorUpdateRaw?: string | null;
+  outcome: string;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 const LAST_IP_STORAGE_KEY = 'soundtouch-radio-bridge:last-ip';
 const ENDPOINTS: Array<{ id: BoseEndpoint; label: string; method: string }> = [
@@ -188,6 +225,9 @@ const LOCAL_RADIO_TEMPLATES: LocalRadioTemplate[] = [
   }
 ];
 const LOCAL_RADIO_POLL_DELAYS = [500, 1500, 3000, 5000];
+const PRESET_LAB_KEYS: Array<Extract<PresetLabCommand, `PRESET_${number}`>> = ['PRESET_1', 'PRESET_2', 'PRESET_3', 'PRESET_4', 'PRESET_5', 'PRESET_6'];
+const PRESET_LAB_POLL_DELAYS = [500, 1500, 3000];
+const CAPABILITY_HIGHLIGHT_PATTERNS = ['preset', 'recent', 'favorite', 'music', 'service', 'local_internet_radio', 'LOCAL_INTERNET_RADIO'];
 
 function now() {
   return new Date().toLocaleTimeString('it-IT');
@@ -392,6 +432,77 @@ function parseInspectorXml(label: InspectorTab, rawXml: string) {
   return base;
 }
 
+function parsePresetResearchXml(xml: string) {
+  const presets = findXmlBlocks(xml, 'preset').map((presetXml) => {
+    const openTag = presetXml.match(/<preset\b[^>]*>/i)?.[0] ?? '';
+    const attrs = parseXmlAttributes(openTag);
+    const parsed = parsePresetXml(presetXml);
+
+    return {
+      ...parsed,
+      updatedOn: attrs.updatedOn ?? attrs.updatedon ?? extractXmlAttribute(presetXml, 'updatedOn') ?? extractXmlValue(presetXml, 'updatedOn')
+    };
+  });
+
+  return {
+    rootTag: xml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1] ?? 'raw',
+    presetCount: presets.length,
+    updatedOnValues: presets.map((preset) => preset.updatedOn).filter(Boolean),
+    contentItems: presets.map((preset) => preset.contentItemXml).filter(Boolean),
+    presets
+  };
+}
+
+function parseExperimentalXml(xml: string) {
+  const rootTag = xml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1] ?? 'raw';
+  const firstTag = xml.match(/<[^!?][^>]*>/)?.[0] ?? '';
+  const interestingTags = ['ContentItem', 'capability', 'capabilities', 'endpoint', 'url', 'service', 'sourceItem', 'recent', 'nowSelection', 'selection'];
+
+  return {
+    rootTag,
+    attributes: parseXmlAttributes(firstTag),
+    values: Object.fromEntries(interestingTags.map((tag) => [tag, extractXmlValue(xml, tag)]).filter(([, value]) => Boolean(value))),
+    contentItems: findXmlBlocks(xml, 'ContentItem').map((block) => ({
+      attributes: parseXmlAttributes(block.match(/<ContentItem\b[^>]*>/i)?.[0] ?? ''),
+      itemName: extractXmlValue(block, 'itemName'),
+      rawXml: block
+    })),
+    sourceItems: parseSourcesXml(xml),
+    links: [...xml.matchAll(/https?:\/\/[^\s<"]+/gi)].map((match) => match[0]),
+    highlightedTerms: CAPABILITY_HIGHLIGHT_PATTERNS.filter((pattern) => new RegExp(pattern, 'i').test(xml))
+  };
+}
+
+function summarizePresetChange(before?: PresetResearchSnapshot, after?: PresetResearchSnapshot) {
+  if (!before || !after) {
+    return 'presets non confrontati';
+  }
+
+  const beforeJson = JSON.stringify(before.parsed.contentItems);
+  const afterJson = JSON.stringify(after.parsed.contentItems);
+  const beforeUpdatedOn = JSON.stringify(before.parsed.updatedOnValues);
+  const afterUpdatedOn = JSON.stringify(after.parsed.updatedOnValues);
+
+  if (beforeJson !== afterJson || beforeUpdatedOn !== afterUpdatedOn || before.rawXml !== after.rawXml) {
+    return 'presets cambiati';
+  }
+
+  return 'nessuna modifica preset rilevata';
+}
+
+function summarizeSourceChange(before?: PresetLabPoll, after?: PresetLabPoll[]) {
+  const latest = after?.length ? after[after.length - 1] : null;
+  if (!before || !latest) {
+    return 'now_playing non confrontato';
+  }
+
+  if (before.parsed.source !== latest.parsed.source || before.parsed.title !== latest.parsed.title || before.parsed.playStatus !== latest.parsed.playStatus) {
+    return 'now_playing cambiato';
+  }
+
+  return 'nessun cambio now_playing rilevato';
+}
+
 function downloadText(filename: string, text: string, type: string) {
   const blob = new Blob([text], { type });
   const url = URL.createObjectURL(blob);
@@ -441,7 +552,14 @@ export default function App() {
   const [localRadioHistory, setLocalRadioHistory] = useState<LocalRadioTestResult[]>([]);
   const [localRadioLoading, setLocalRadioLoading] = useState(false);
   const [browserStreamUrl, setBrowserStreamUrl] = useState('');
+  const [presetLabLoading, setPresetLabLoading] = useState(false);
+  const [presetLabHistory, setPresetLabHistory] = useState<PresetLabExperiment[]>([]);
+  const [presetLabResult, setPresetLabResult] = useState<PresetLabExperiment | null>(null);
+  const [recentsResearch, setRecentsResearch] = useState<ExperimentalEndpointResult | null>(null);
+  const [capabilitiesResearch, setCapabilitiesResearch] = useState<ExperimentalEndpointResult | null>(null);
+  const [nowSelectionResearch, setNowSelectionResearch] = useState<ExperimentalEndpointResult | null>(null);
   const lastRealtimeErrorRawRef = useRef<string | null>(null);
+  const realtimeEventsRef = useRef<RealtimeEvent[]>([]);
   const browserAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
@@ -633,7 +751,11 @@ export default function App() {
 
 
   function applyRealtimeEvent(event: RealtimeEvent) {
-    setRealtimeEvents((prev) => [event, ...prev].slice(0, 50));
+    setRealtimeEvents((prev) => {
+      const nextEvents = [event, ...prev].slice(0, 50);
+      realtimeEventsRef.current = nextEvents;
+      return nextEvents;
+    });
 
     if (event.eventName === 'errorUpdate' || /<errorUpdate\b/i.test(event.raw ?? '')) {
       const rawError = event.raw ?? JSON.stringify(event, null, 2);
@@ -1081,6 +1203,233 @@ export default function App() {
     downloadText(
       `soundtouch-local-radio-history-${boseIp || 'device'}.json`,
       JSON.stringify({ exportedAt: new Date().toISOString(), activeIp: boseIp, localRadioHistory }, null, 2),
+      'application/json'
+    );
+  }
+
+
+  function getRealtimeEventsSince(timestampIso: string) {
+    const startedAt = new Date(timestampIso).getTime();
+    return realtimeEventsRef.current.filter((event) => new Date(event.timestamp).getTime() >= startedAt);
+  }
+
+  async function fetchPresetLabNowPlaying(delayMs = 0): Promise<PresetLabPoll> {
+    const response = await fetch(`${API_BASE}/bose/${encodedIp}/now_playing`);
+    const nowPlayingXml = await response.text();
+    const parsed = parseRestSnapshot(nowPlayingXml, '');
+
+    setRealtimeSnapshot((prev) => ({
+      source: parsed.source || prev.source,
+      title: parsed.title || prev.title,
+      artist: parsed.artist || prev.artist,
+      playStatus: parsed.playStatus || prev.playStatus,
+      itemName: parsed.itemName || prev.itemName,
+      stationName: parsed.stationName || prev.stationName,
+      volume: prev.volume
+    }));
+
+    return {
+      delayMs,
+      timestamp: new Date().toISOString(),
+      httpStatus: response.status,
+      nowPlayingXml,
+      parsed
+    };
+  }
+
+  async function fetchPresetResearchSnapshot(): Promise<PresetResearchSnapshot> {
+    const response = await fetch(`${API_BASE}/bose/${encodedIp}/presets`);
+    const rawXml = await response.text();
+
+    return {
+      httpStatus: response.status,
+      rawXml,
+      parsed: parsePresetResearchXml(rawXml)
+    };
+  }
+
+  async function sendPresetLabKey(command: Extract<PresetLabCommand, `PRESET_${number}` | 'ADD_FAVORITE' | 'REMOVE_FAVORITE'>) {
+    const response = await fetch(`${API_BASE}/bose/${encodedIp}/key`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key: command })
+    });
+    const body = await readResponseBody(response);
+
+    return { response, body };
+  }
+
+  async function runPresetKeyExperiment(command: Extract<PresetLabCommand, `PRESET_${number}`>) {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Preset key test annullato: IP Bose mancante.'));
+      return;
+    }
+
+    setPresetLabLoading(true);
+    lastRealtimeErrorRawRef.current = null;
+    const startedAt = new Date().toISOString();
+
+    try {
+      const before = await fetchPresetLabNowPlaying(0);
+      const keyResult = await sendPresetLabKey(command);
+      let elapsedMs = 0;
+      const after: PresetLabPoll[] = [];
+
+      for (const delayMs of PRESET_LAB_POLL_DELAYS) {
+        await waitFor(delayMs - elapsedMs);
+        elapsedMs = delayMs;
+        after.push(await fetchPresetLabNowPlaying(delayMs));
+      }
+
+      const sourceSummary = summarizeSourceChange(before, after);
+      const errorUpdateRaw = lastRealtimeErrorRawRef.current;
+      const experiment: PresetLabExperiment = {
+        timestamp: startedAt,
+        command,
+        responseBose: keyResult.body,
+        nowPlayingBefore: before,
+        nowPlayingAfter: after,
+        websocketEvents: getRealtimeEventsSince(startedAt),
+        errorUpdateRaw,
+        outcome: errorUpdateRaw ? 'errorUpdate ricevuto' : sourceSummary
+      };
+      setPresetLabResult(experiment);
+      setPresetLabHistory((prev) => [experiment, ...prev].slice(0, 100));
+      appendLog(makeLog(keyResult.response.ok ? 'online' : 'offline', `Preset Restoration ${command}: ${experiment.outcome}`, boseIp));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Preset key test fallito.';
+      const experiment: PresetLabExperiment = {
+        timestamp: startedAt,
+        command,
+        responseBose: message,
+        nowPlayingAfter: [],
+        websocketEvents: getRealtimeEventsSince(startedAt),
+        errorUpdateRaw: lastRealtimeErrorRawRef.current,
+        outcome: 'errore rete/proxy'
+      };
+      setPresetLabResult(experiment);
+      setPresetLabHistory((prev) => [experiment, ...prev].slice(0, 100));
+      appendLog(makeLog('offline', message, boseIp));
+    } finally {
+      setPresetLabLoading(false);
+    }
+  }
+
+  async function runFavoriteExperiment(command: Extract<PresetLabCommand, 'ADD_FAVORITE' | 'REMOVE_FAVORITE'>) {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Favorite test annullato: IP Bose mancante.'));
+      return;
+    }
+
+    setPresetLabLoading(true);
+    lastRealtimeErrorRawRef.current = null;
+    const startedAt = new Date().toISOString();
+
+    try {
+      const [nowPlayingBefore, presetsBefore] = await Promise.all([
+        fetchPresetLabNowPlaying(0),
+        fetchPresetResearchSnapshot()
+      ]);
+      const keyResult = await sendPresetLabKey(command);
+      await waitFor(700);
+      const [nowPlayingAfter, presetsAfter] = await Promise.all([
+        fetchPresetLabNowPlaying(700),
+        fetchPresetResearchSnapshot()
+      ]);
+      const presetSummary = summarizePresetChange(presetsBefore, presetsAfter);
+      const errorUpdateRaw = lastRealtimeErrorRawRef.current;
+      const experiment: PresetLabExperiment = {
+        timestamp: startedAt,
+        command,
+        responseBose: keyResult.body,
+        nowPlayingBefore,
+        nowPlayingAfter: [nowPlayingAfter],
+        presetsBefore,
+        presetsAfter,
+        websocketEvents: getRealtimeEventsSince(startedAt),
+        errorUpdateRaw,
+        outcome: errorUpdateRaw ? `errorUpdate ricevuto · ${presetSummary}` : presetSummary
+      };
+      setPresetLabResult(experiment);
+      setPresetLabHistory((prev) => [experiment, ...prev].slice(0, 100));
+      setInspectorRecords((prev) => ({
+        ...prev,
+        Presets: {
+          label: 'Presets',
+          endpoint: 'presets',
+          rawXml: presetsAfter.rawXml,
+          parsedJson: { rootTag: presetsAfter.parsed.rootTag, presets: presetsAfter.parsed.presets },
+          timestamp: new Date().toISOString()
+        }
+      }));
+      appendLog(makeLog(keyResult.response.ok ? 'online' : 'offline', `Favorite ${command}: ${experiment.outcome}`, boseIp));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Favorite test fallito.';
+      const experiment: PresetLabExperiment = {
+        timestamp: startedAt,
+        command,
+        responseBose: message,
+        nowPlayingAfter: [],
+        websocketEvents: getRealtimeEventsSince(startedAt),
+        errorUpdateRaw: lastRealtimeErrorRawRef.current,
+        outcome: 'errore rete/proxy'
+      };
+      setPresetLabResult(experiment);
+      setPresetLabHistory((prev) => [experiment, ...prev].slice(0, 100));
+      appendLog(makeLog('offline', message, boseIp));
+    } finally {
+      setPresetLabLoading(false);
+    }
+  }
+
+  async function fetchPresetLabEndpoint(command: Extract<PresetLabCommand, 'RECENTS' | 'CAPABILITIES' | 'NOW_SELECTION'>, endpoint: 'recents' | 'capabilities' | 'now_selection') {
+    if (!canSend) {
+      appendLog(makeLog('offline', `GET /${endpoint} annullato: IP Bose mancante.`));
+      return;
+    }
+
+    setPresetLabLoading(true);
+    lastRealtimeErrorRawRef.current = null;
+    const startedAt = new Date().toISOString();
+
+    try {
+      const response = await fetch(`${API_BASE}/bose/${encodedIp}/${endpoint}`);
+      const result = (await response.json()) as ExperimentalEndpointResult;
+      if (command === 'RECENTS') setRecentsResearch(result);
+      if (command === 'CAPABILITIES') setCapabilitiesResearch(result);
+      if (command === 'NOW_SELECTION') setNowSelectionResearch(result);
+
+      const experiment: PresetLabExperiment = {
+        timestamp: startedAt,
+        command,
+        responseBose: JSON.stringify(result, null, 2),
+        nowPlayingAfter: [],
+        websocketEvents: getRealtimeEventsSince(startedAt),
+        errorUpdateRaw: lastRealtimeErrorRawRef.current,
+        outcome: result.ok ? `endpoint disponibile HTTP ${result.status}` : `endpoint non disponibile HTTP ${result.status}`
+      };
+      setPresetLabResult(experiment);
+      setPresetLabHistory((prev) => [experiment, ...prev].slice(0, 100));
+      appendLog(makeLog(result.ok ? 'online' : 'offline', `Research /${endpoint}: ${experiment.outcome}`, boseIp));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `GET /${endpoint} fallito.`;
+      appendLog(makeLog('offline', message, boseIp));
+    } finally {
+      setPresetLabLoading(false);
+    }
+  }
+
+  function exportPresetLabHistoryJson() {
+    downloadText(
+      `soundtouch-preset-restoration-lab-${boseIp || 'device'}.json`,
+      JSON.stringify({
+        exportedAt: new Date().toISOString(),
+        activeIp: boseIp,
+        presetLabHistory,
+        recentsResearch,
+        capabilitiesResearch,
+        nowSelectionResearch
+      }, null, 2),
       'application/json'
     );
   }
@@ -1605,6 +1954,153 @@ export default function App() {
             {localRadioHistory.length === 0 ? <p className="hint">Nessuno storico disponibile.</p> : localRadioHistory.map((item, index) => (
               <details key={`${item.timestamp}-${index}`}>
                 <summary>{new Date(item.timestamp).toLocaleTimeString('it-IT')} · {item.templateId} · {item.radioName} · {item.outcome}</summary>
+                <pre>{JSON.stringify(item, null, 2)}</pre>
+              </details>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="panel preset-lab-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">V7 Preset Restoration Research</p>
+            <h2>Preset Restoration Lab</h2>
+          </div>
+          <span>preset keys · favorites · endpoint discovery</span>
+        </div>
+        <p className="hint">
+          Laboratorio per capire se le API locali ufficiali possono richiamare preset legacy, trasformare lo stream corrente in preset con ADD_FAVORITE, usare recents come ponte o scoprire capability locali non esposte.
+        </p>
+
+        <div className="preset-lab-grid">
+          <section>
+            <h3>1. Preset key test</h3>
+            <p className="hint">Invia press+release su PRESET_1…PRESET_6 e confronta /now_playing prima/dopo con polling a 500ms, 1500ms e 3000ms.</p>
+            <div className="template-button-grid">
+              {PRESET_LAB_KEYS.map((key) => (
+                <button key={key} type="button" onClick={() => void runPresetKeyExperiment(key)} disabled={!canSend || presetLabLoading}>
+                  {key}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <h3>2. Favorite test</h3>
+            <p className="hint">ADD_FAVORITE e REMOVE_FAVORITE vengono inviati come key press+release. Dopo il comando ricarico /presets e confronto updatedOn/ContentItem.</p>
+            <div className="template-row">
+              <button type="button" onClick={() => void runFavoriteExperiment('ADD_FAVORITE')} disabled={!canSend || presetLabLoading}>
+                ADD_FAVORITE
+              </button>
+              <button type="button" onClick={() => void runFavoriteExperiment('REMOVE_FAVORITE')} disabled={!canSend || presetLabLoading}>
+                REMOVE_FAVORITE
+              </button>
+            </div>
+          </section>
+
+          <section>
+            <h3>3–5. Endpoint research</h3>
+            <p className="hint">Prova endpoint locali sperimentali e conserva anche 404/errori con raw response.</p>
+            <div className="template-row">
+              <button type="button" onClick={() => void fetchPresetLabEndpoint('RECENTS', 'recents')} disabled={!canSend || presetLabLoading}>
+                GET /recents
+              </button>
+              <button type="button" onClick={() => void fetchPresetLabEndpoint('CAPABILITIES', 'capabilities')} disabled={!canSend || presetLabLoading}>
+                GET /capabilities
+              </button>
+              <button type="button" onClick={() => void fetchPresetLabEndpoint('NOW_SELECTION', 'now_selection')} disabled={!canSend || presetLabLoading}>
+                GET /now_selection
+              </button>
+            </div>
+            <button type="button" onClick={exportPresetLabHistoryJson} disabled={presetLabHistory.length === 0 && !recentsResearch && !capabilitiesResearch && !nowSelectionResearch}>
+              Export JSON completo
+            </button>
+          </section>
+        </div>
+
+        <div className="preset-research-endpoints">
+          {([['Recents', recentsResearch], ['Capabilities', capabilitiesResearch], ['Now selection', nowSelectionResearch]] as Array<[string, ExperimentalEndpointResult | null]>).map(([label, result]) => (
+            <details key={label} open={Boolean(result?.ok)}>
+              <summary>{label}: {result ? `HTTP ${result.status}` : 'non testato'}</summary>
+              {result ? (
+                <>
+                  {label === 'Capabilities' ? (
+                    <div className="capability-highlights">
+                      {parseExperimentalXml(result.body).highlightedTerms.length === 0 ? <span>Nessun termine evidenziato.</span> : parseExperimentalXml(result.body).highlightedTerms.map((term) => <mark key={term}>{term}</mark>)}
+                    </div>
+                  ) : null}
+                  {label === 'Now selection' ? (
+                    <p className="hint">Eventi websocket nowSelectionUpdated correlati: {realtimeEvents.filter((event) => event.eventName === 'nowSelectionUpdated' || /<nowSelectionUpdated\b/i.test(event.raw ?? '')).length}</p>
+                  ) : null}
+                  <h4>Parsed JSON</h4>
+                  <pre>{JSON.stringify(parseExperimentalXml(result.body), null, 2)}</pre>
+                  <h4>Raw response</h4>
+                  <pre>{result.contentType.includes('xml') || /^\s*</.test(result.body) ? formatXml(result.body) : result.body}</pre>
+                </>
+              ) : <p className="hint">Premi il pulsante GET per interrogare l’endpoint.</p>}
+            </details>
+          ))}
+        </div>
+
+        <div className="preset-lab-result">
+          <h3>Risultato ultimo esperimento</h3>
+          {presetLabResult ? (
+            <div className="select-verification">
+              <div className={`verification-badge ${presetLabResult.errorUpdateRaw ? 'error' : 'pending'}`}>{presetLabResult.outcome}</div>
+              <div className="realtime-grid">
+                <article><span>Comando</span><strong>{presetLabResult.command}</strong></article>
+                <article><span>Before source</span><strong>{presetLabResult.nowPlayingBefore?.parsed.source ?? 'n/d'}</strong></article>
+                <article><span>After source</span><strong>{presetLabResult.nowPlayingAfter[presetLabResult.nowPlayingAfter.length - 1]?.parsed.source ?? 'n/d'}</strong></article>
+                <article><span>WebSocket correlati</span><strong>{presetLabResult.websocketEvents.length}</strong></article>
+              </div>
+              {presetLabResult.errorUpdateRaw ? (
+                <details open>
+                  <summary>errorUpdate realtime</summary>
+                  <pre>{presetLabResult.errorUpdateRaw}</pre>
+                </details>
+              ) : null}
+              <div className="experimental-grid">
+                <section>
+                  <h4>Response Bose</h4>
+                  <pre>{presetLabResult.responseBose}</pre>
+                  <h4>now_playing before</h4>
+                  <pre>{presetLabResult.nowPlayingBefore ? formatXml(presetLabResult.nowPlayingBefore.nowPlayingXml) : 'n/d'}</pre>
+                </section>
+                <section>
+                  <h4>now_playing after</h4>
+                  <div className="poll-grid">
+                    {presetLabResult.nowPlayingAfter.length === 0 ? <p className="hint">Nessun polling now_playing.</p> : presetLabResult.nowPlayingAfter.map((poll) => (
+                      <details key={`${presetLabResult.timestamp}-${poll.delayMs}`} open={poll.delayMs === PRESET_LAB_POLL_DELAYS[PRESET_LAB_POLL_DELAYS.length - 1]}>
+                        <summary>{poll.delayMs}ms · HTTP {poll.httpStatus ?? 'errore'} · source {poll.parsed.source ?? 'n/d'}</summary>
+                        <pre>{formatXml(poll.nowPlayingXml)}</pre>
+                      </details>
+                    ))}
+                  </div>
+                </section>
+              </div>
+              {presetLabResult.presetsBefore || presetLabResult.presetsAfter ? (
+                <div className="experimental-grid">
+                  <section>
+                    <h4>Presets before</h4>
+                    <pre>{presetLabResult.presetsBefore ? JSON.stringify(presetLabResult.presetsBefore.parsed, null, 2) : 'n/d'}</pre>
+                  </section>
+                  <section>
+                    <h4>Presets after</h4>
+                    <pre>{presetLabResult.presetsAfter ? JSON.stringify(presetLabResult.presetsAfter.parsed, null, 2) : 'n/d'}</pre>
+                  </section>
+                </div>
+              ) : null}
+              <h4>WebSocket events correlati</h4>
+              <pre>{JSON.stringify(presetLabResult.websocketEvents, null, 2)}</pre>
+            </div>
+          ) : <p className="hint">Nessun esperimento V7 eseguito.</p>}
+
+          <h3>Storico esperimenti</h3>
+          <div className="select-history-list">
+            {presetLabHistory.length === 0 ? <p className="hint">Nessuno storico disponibile.</p> : presetLabHistory.map((item, index) => (
+              <details key={`${item.timestamp}-${index}`}>
+                <summary>{new Date(item.timestamp).toLocaleTimeString('it-IT')} · {item.command} · {item.outcome}</summary>
                 <pre>{JSON.stringify(item, null, 2)}</pre>
               </details>
             ))}
