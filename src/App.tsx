@@ -51,6 +51,8 @@ type RealtimeSnapshot = {
   artist: string;
   playStatus: string;
   volume: string;
+  itemName?: string | null;
+  stationName?: string | null;
 };
 
 type RealtimeEvent = {
@@ -88,11 +90,24 @@ type ParsedPreset = {
   contentItemXml: string | null;
 };
 
+type SelectPoll = {
+  delayMs: number;
+  timestamp: string;
+  httpStatus: { nowPlaying: number | null; volume: number | null };
+  nowPlayingXml: string;
+  volumeXml: string;
+  parsed: ReturnType<typeof parseRestSnapshot>;
+};
+
 type SelectResult = {
+  presetLabel?: string;
   requestXml: string;
   responseBody: string;
   httpStatus: number | null;
   timestamp: string;
+  polls: SelectPoll[];
+  outcome: 'pending' | 'success' | 'failed' | 'error';
+  errorUpdateRaw?: string | null;
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
@@ -203,6 +218,8 @@ function parseRestSnapshot(nowPlayingXml: string, volumeXml: string) {
       ?? extractXmlValue(nowPlayingXml, 'stationName'),
     artist: extractXmlValue(nowPlayingXml, 'artist'),
     playStatus: extractXmlValue(nowPlayingXml, 'playStatus') ?? extractXmlValue(nowPlayingXml, 'state'),
+    itemName: extractXmlValue(nowPlayingXml, 'itemName'),
+    stationName: extractXmlValue(nowPlayingXml, 'stationName'),
     volume: extractXmlValue(volumeXml, 'actualvolume') ?? extractXmlValue(volumeXml, 'volume')
   };
 }
@@ -338,7 +355,9 @@ export default function App() {
   const [inspectorLoading, setInspectorLoading] = useState(false);
   const [selectXml, setSelectXml] = useState(SELECT_TEMPLATES.tuneIn);
   const [selectResult, setSelectResult] = useState<SelectResult | null>(null);
+  const [selectHistory, setSelectHistory] = useState<SelectResult[]>([]);
   const [selectLoading, setSelectLoading] = useState(false);
+  const lastRealtimeErrorRawRef = useRef<string | null>(null);
   const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
@@ -473,6 +492,8 @@ export default function App() {
         title: restSnapshot.title || prev.title,
         artist: restSnapshot.artist || prev.artist,
         playStatus: restSnapshot.playStatus || prev.playStatus,
+        itemName: restSnapshot.itemName || prev.itemName,
+        stationName: restSnapshot.stationName || prev.stationName,
         volume: restSnapshot.volume || prev.volume
       }));
       setResponse({
@@ -528,6 +549,11 @@ export default function App() {
 
   function applyRealtimeEvent(event: RealtimeEvent) {
     setRealtimeEvents((prev) => [event, ...prev].slice(0, 50));
+
+    if (event.eventName === 'errorUpdate' || /<errorUpdate\b/i.test(event.raw ?? '')) {
+      const rawError = event.raw ?? JSON.stringify(event, null, 2);
+      lastRealtimeErrorRawRef.current = rawError;
+    }
 
     if (event.connectionState || event.eventName === 'connectionStateUpdated') {
       setRealtimeState(event.connectionState ?? event.message ?? 'connectionStateUpdated');
@@ -636,25 +662,70 @@ export default function App() {
   }
 
 
-  async function refreshNowPlayingAfterSelect() {
-    try {
-      const res = await fetch(`${API_BASE}/bose/${encodedIp}/now_playing`);
-      const nowPlayingXml = await res.text();
-      const restSnapshot = parseRestSnapshot(nowPlayingXml, '');
-      setRealtimeSnapshot((prev) => ({
-        source: restSnapshot.source || prev.source,
-        title: restSnapshot.title || prev.title,
-        artist: restSnapshot.artist || prev.artist,
-        playStatus: restSnapshot.playStatus || prev.playStatus,
-        volume: prev.volume
-      }));
-      appendLog(makeLog(res.ok ? 'online' : 'offline', `Refresh /now_playing dopo select: HTTP ${res.status}`, boseIp));
-    } catch (error) {
-      appendLog(makeLog('offline', error instanceof Error ? error.message : 'Refresh /now_playing dopo select fallito.', boseIp));
-    }
+  function getParsedPresets() {
+    return (inspectorRecords.Presets?.parsedJson as { presets?: ParsedPreset[] } | undefined)?.presets ?? [];
   }
 
-  async function trySelectXml(xml: string) {
+  function waitFor(ms: number) {
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+  }
+
+  async function pollSelectVerification(delayMs: number): Promise<SelectPoll> {
+    const [nowPlayingResponse, volumeResponse] = await Promise.all([
+      fetch(`${API_BASE}/bose/${encodedIp}/now_playing`),
+      fetch(`${API_BASE}/bose/${encodedIp}/volume`)
+    ]);
+    const [nowPlayingXml, volumeXml] = await Promise.all([
+      nowPlayingResponse.text(),
+      volumeResponse.text()
+    ]);
+    const parsed = parseRestSnapshot(nowPlayingXml, volumeXml);
+
+    setRealtimeSnapshot((prev) => ({
+      source: parsed.source || prev.source,
+      title: parsed.title || prev.title,
+      artist: parsed.artist || prev.artist,
+      playStatus: parsed.playStatus || prev.playStatus,
+      itemName: parsed.itemName || prev.itemName,
+      stationName: parsed.stationName || prev.stationName,
+      volume: parsed.volume || prev.volume
+    }));
+
+    return {
+      delayMs,
+      timestamp: new Date().toISOString(),
+      httpStatus: { nowPlaying: nowPlayingResponse.status, volume: volumeResponse.status },
+      nowPlayingXml,
+      volumeXml,
+      parsed
+    };
+  }
+
+  function getLastSelectPoll(polls: SelectPoll[]) {
+    return polls.length > 0 ? polls[polls.length - 1] : null;
+  }
+
+  function getSelectOutcome(polls: SelectPoll[], errorUpdateRaw?: string | null): SelectResult['outcome'] {
+    if (errorUpdateRaw) {
+      return 'error';
+    }
+
+    return polls.some((poll) => ['TUNEIN', 'LOCAL_INTERNET_RADIO'].includes(String(poll.parsed.source ?? '').toUpperCase()))
+      ? 'success'
+      : 'failed';
+  }
+
+  function exportSelectHistoryJson() {
+    downloadText(
+      `soundtouch-select-history-${boseIp || 'device'}.json`,
+      JSON.stringify({ exportedAt: new Date().toISOString(), activeIp: boseIp, selectHistory }, null, 2),
+      'application/json'
+    );
+  }
+
+  async function trySelectXml(xml: string, presetLabel?: string) {
     if (!canSend) {
       appendLog(makeLog('offline', 'Select annullato: IP Bose mancante.'));
       return;
@@ -667,6 +738,9 @@ export default function App() {
     }
 
     setSelectLoading(true);
+    lastRealtimeErrorRawRef.current = null;
+    const startedAt = new Date().toISOString();
+
     try {
       const res = await fetch(`${API_BASE}/bose/${encodedIp}/select`, {
         method: 'POST',
@@ -677,24 +751,73 @@ export default function App() {
         body: requestXml
       });
       const responseBody = await readResponseBody(res);
-      setSelectResult({
+      let nextResult: SelectResult = {
+        presetLabel,
         requestXml,
         responseBody,
         httpStatus: res.status,
-        timestamp: new Date().toISOString()
-      });
+        timestamp: startedAt,
+        polls: [],
+        outcome: 'pending',
+        errorUpdateRaw: null
+      };
+      setSelectResult(nextResult);
       appendLog(makeLog(res.ok ? 'online' : 'offline', `POST /select HTTP ${res.status}`, boseIp));
-      window.setTimeout(() => {
-        void refreshNowPlayingAfterSelect();
-      }, 500);
+
+      let elapsedMs = 0;
+      for (const delayMs of [500, 1500, 3000]) {
+        await waitFor(delayMs - elapsedMs);
+        elapsedMs = delayMs;
+        const poll = await pollSelectVerification(delayMs);
+        nextResult = {
+          ...nextResult,
+          polls: [...nextResult.polls, poll],
+          errorUpdateRaw: lastRealtimeErrorRawRef.current,
+          outcome: getSelectOutcome([...nextResult.polls, poll], lastRealtimeErrorRawRef.current)
+        };
+        setSelectResult(nextResult);
+      }
+
+      setSelectHistory((prev) => [nextResult, ...prev].slice(0, 50));
+      appendLog(makeLog(nextResult.outcome === 'success' ? 'online' : 'offline', `Verifica /select: ${nextResult.outcome}`, boseIp));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Errore sconosciuto POST /select.';
-      setSelectResult({ requestXml, responseBody: message, httpStatus: null, timestamp: new Date().toISOString() });
+      const failedResult: SelectResult = {
+        presetLabel,
+        requestXml,
+        responseBody: message,
+        httpStatus: null,
+        timestamp: startedAt,
+        polls: [],
+        outcome: 'error',
+        errorUpdateRaw: lastRealtimeErrorRawRef.current
+      };
+      setSelectResult(failedResult);
+      setSelectHistory((prev) => [failedResult, ...prev].slice(0, 50));
       appendLog(makeLog('offline', message, boseIp));
     } finally {
       setSelectLoading(false);
     }
   }
+
+  async function tryAllPresets() {
+    const presets = getParsedPresets().filter((preset) => preset.contentItemXml);
+    if (presets.length === 0) {
+      appendLog(makeLog('offline', 'Try all presets annullato: nessun ContentItem disponibile.'));
+      return;
+    }
+
+    for (const [index, preset] of presets.entries()) {
+      const label = preset.itemName ?? preset.stationName ?? `Preset ${preset.id ?? index + 1}`;
+      if (!window.confirm(`Provare il preset ${index + 1}/${presets.length}: ${label}?`)) {
+        appendLog(makeLog('idle', `Try all presets interrotto prima di ${label}.`, boseIp));
+        break;
+      }
+
+      await trySelectXml(preset.contentItemXml!, label);
+    }
+  }
+
 
   return (
     <div className="app-shell">
@@ -942,14 +1065,22 @@ export default function App() {
           <section>
             <div className="response-heading compact-heading">
               <h3>Preset da /presets</h3>
-              <button type="button" onClick={() => void loadInspectorTab('Presets')} disabled={!canSend || inspectorLoading}>
-                Ricarica presets
-              </button>
+              <div className="template-row">
+                <button type="button" onClick={() => void loadInspectorTab('Presets')} disabled={!canSend || inspectorLoading}>
+                  Ricarica presets
+                </button>
+                <button type="button" onClick={() => void tryAllPresets()} disabled={!canSend || selectLoading}>
+                  Try all presets
+                </button>
+                <button type="button" onClick={exportSelectHistoryJson} disabled={selectHistory.length === 0}>
+                  Export storico test JSON
+                </button>
+              </div>
             </div>
             <div className="select-preset-list">
-              {((inspectorRecords.Presets?.parsedJson as { presets?: ParsedPreset[] } | undefined)?.presets ?? []).length === 0 ? (
+              {getParsedPresets().length === 0 ? (
                 <p className="hint">Carica la tab Presets nell’Inspector o premi “Ricarica presets”.</p>
-              ) : ((inspectorRecords.Presets?.parsedJson as { presets?: ParsedPreset[] }).presets ?? []).map((preset, index) => (
+              ) : getParsedPresets().map((preset, index) => (
                 <article key={`select-${preset.id ?? index}-${preset.location ?? 'preset'}`}>
                   <strong>{preset.itemName ?? preset.stationName ?? `Preset ${preset.id ?? index + 1}`}</strong>
                   <small>source: {preset.source ?? 'n/d'} · location: {preset.location ?? 'n/d'}</small>
@@ -958,7 +1089,7 @@ export default function App() {
                     onClick={() => {
                       const xml = preset.contentItemXml ?? '';
                       setSelectXml(xml);
-                      void trySelectXml(xml);
+                      void trySelectXml(xml, preset.itemName ?? preset.stationName ?? `Preset ${preset.id ?? index + 1}`);
                     }}
                     disabled={!preset.contentItemXml || selectLoading}
                   >
@@ -976,7 +1107,7 @@ export default function App() {
               <button type="button" onClick={() => setSelectXml(SELECT_TEMPLATES.upnp)}>C) UPNP item manuale</button>
             </div>
             <textarea value={selectXml} onChange={(event) => setSelectXml(event.target.value)} rows={8} />
-            <button type="button" onClick={() => void trySelectXml(selectXml)} disabled={!canSend || selectLoading}>
+            <button type="button" onClick={() => void trySelectXml(selectXml, 'XML manuale')} disabled={!canSend || selectLoading}>
               {selectLoading ? 'Select in corso…' : 'Try Select XML manuale'}
             </button>
           </section>
@@ -984,21 +1115,59 @@ export default function App() {
         <div className="select-result">
           <h3>Risultato POST /select</h3>
           {selectResult ? (
-            <div className="experimental-grid">
-              <section>
-                <p>HTTP status: <strong>{selectResult.httpStatus ?? 'errore rete'}</strong></p>
-                <p>Timestamp: {new Date(selectResult.timestamp).toLocaleTimeString('it-IT')}</p>
-                <h4>XML inviato</h4>
-                <pre>{formatXml(selectResult.requestXml)}</pre>
-              </section>
-              <section>
-                <h4>Risposta Bose</h4>
-                <pre>{selectResult.responseBody}</pre>
-              </section>
-            </div>
+            <>
+              <div className="select-verification">
+                <h4>Select verification</h4>
+                <div className={`verification-badge ${selectResult.outcome}`}>
+                  {selectResult.outcome === 'success' ? 'Select riuscito' : `Esito: ${selectResult.outcome}`}
+                </div>
+                <div className="realtime-grid">
+                  <article><span>Source attiva</span><strong>{getLastSelectPoll(selectResult.polls)?.parsed.source ?? 'n/d'}</strong></article>
+                  <article><span>itemName</span><strong>{getLastSelectPoll(selectResult.polls)?.parsed.itemName ?? 'n/d'}</strong></article>
+                  <article><span>stationName</span><strong>{getLastSelectPoll(selectResult.polls)?.parsed.stationName ?? 'n/d'}</strong></article>
+                  <article><span>playStatus</span><strong>{getLastSelectPoll(selectResult.polls)?.parsed.playStatus ?? 'n/d'}</strong></article>
+                </div>
+                {selectResult.errorUpdateRaw ? (
+                  <details open>
+                    <summary>errorUpdate realtime</summary>
+                    <pre>{selectResult.errorUpdateRaw}</pre>
+                  </details>
+                ) : null}
+                <div className="poll-grid">
+                  {selectResult.polls.map((poll) => (
+                    <details key={`${selectResult.timestamp}-${poll.delayMs}`}>
+                      <summary>{poll.delayMs}ms · source {poll.parsed.source ?? 'n/d'} · play {poll.parsed.playStatus ?? 'n/d'}</summary>
+                      <pre>{JSON.stringify(poll, null, 2)}</pre>
+                    </details>
+                  ))}
+                </div>
+              </div>
+              <div className="experimental-grid">
+                <section>
+                  <p>Preset: <strong>{selectResult.presetLabel ?? 'n/d'}</strong></p>
+                  <p>HTTP status: <strong>{selectResult.httpStatus ?? 'errore rete'}</strong></p>
+                  <p>Timestamp: {new Date(selectResult.timestamp).toLocaleTimeString('it-IT')}</p>
+                  <h4>XML inviato</h4>
+                  <pre>{formatXml(selectResult.requestXml)}</pre>
+                </section>
+                <section>
+                  <h4>Risposta Bose</h4>
+                  <pre>{selectResult.responseBody}</pre>
+                </section>
+              </div>
+            </>
           ) : (
             <p className="hint">Nessun test /select eseguito.</p>
           )}
+          <h3>Storico test select</h3>
+          <div className="select-history-list">
+            {selectHistory.length === 0 ? <p className="hint">Nessuno storico disponibile.</p> : selectHistory.map((item, index) => (
+              <details key={`${item.timestamp}-${index}`}>
+                <summary>{new Date(item.timestamp).toLocaleTimeString('it-IT')} · {item.presetLabel ?? 'XML manuale'} · {item.outcome}</summary>
+                <pre>{JSON.stringify(item, null, 2)}</pre>
+              </details>
+            ))}
+          </div>
         </div>
       </section>
 
