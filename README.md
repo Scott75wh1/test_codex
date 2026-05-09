@@ -46,6 +46,7 @@ La V5 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
 - Il play di un preset chiama `POST /api/replacement-presets/:id/play`: il backend legge lo `streamUrl` dal JSON e usa lo stesso flusso per tutti i preset: Stop UPnP, SetAVTransportURI, attesa 300 ms, Play, GetTransportInfo, GetPositionInfo e polling `/now_playing`.
 - Radio Browser serve solo per trovare stream radio; la riproduzione non usa AirPlay, Bluetooth o audio HTML5, ma avviene direttamente dalla Bose via UPnP AVTransport sulla porta `8091`.
 - La diagnostica storica (inspector, raw XML, SOAP log, websocket debug, export JSON, experimental select e research panels) non è più visibile nella UI principale: resta accessibile solo aprendo `/dashboard/diagnostics` dal link “Diagnostica avanzata”.
+- La Remote usa `GET /api/status` con sincronizzazione leggera ogni 5 secondi, aggiornamenti ottimistici immediati per Play/Stop/Play-Pause/Volume e debounce volume a 400ms per evitare polling o refetch aggressivi.
 - Nuova sezione **UPnP Playback Test**: prova sperimentale di `SetAVTransportURI` e `Play` su `http://BOSE_IP:8091/AVTransport/Control`, con polling `/now_playing` dopo il comando e probe `rootDesc.xml`/porta 8091.
 
 ## Struttura progetto

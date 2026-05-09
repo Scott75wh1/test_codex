@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import RemotePage from './routes';
 
 type BoseEndpoint = 'info' | 'now_playing' | 'sources' | 'volume';
 type BoseKey = 'PLAY_PAUSE' | 'STOP' | 'VOLUME_UP' | 'VOLUME_DOWN';
@@ -630,7 +631,7 @@ function getStoredIp() {
   return window.localStorage.getItem(LAST_IP_STORAGE_KEY) ?? '192.168.1.50';
 }
 
-export default function App() {
+function DiagnosticsApp() {
   const [boseIp, setBoseIp] = useState(() => getStoredIp());
   const [volume, setVolume] = useState(30);
   const [response, setResponse] = useState<ApiResponse>(() => makeInitialResponse());
@@ -3271,4 +3272,9 @@ export default function App() {
       </section>
     </div>
   );
+}
+
+export default function App() {
+  const isDiagnosticsRoute = window.location.pathname.includes('/dashboard/diagnostics');
+  return isDiagnosticsRoute ? <DiagnosticsApp /> : <RemotePage />;
 }

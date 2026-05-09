@@ -87,6 +87,10 @@ app.use((req, res, next) => {
 });
 app.use(express.text({ type: ['application/xml', 'text/xml'] }));
 app.use(express.json());
+app.use('/api', (_req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store');
+  next();
+});
 
 function loadLocalEnv() {
   const envPath = path.join(__dirname, '..', '.env');
@@ -286,6 +290,41 @@ function parseSoundTouchRealtimeXml(xml) {
   }
 
   return parsed;
+}
+
+
+function parseSourcesXml(xml) {
+  return findXmlBlocks(xml, 'sourceItem').map((sourceXml) => ({
+    source: extractXmlAttribute(sourceXml, 'source'),
+    sourceAccount: extractXmlAttribute(sourceXml, 'sourceAccount'),
+    status: extractXmlAttribute(sourceXml, 'status'),
+    isLocal: extractXmlAttribute(sourceXml, 'isLocal'),
+    multiroomAllowed: extractXmlAttribute(sourceXml, 'multiroomallowed'),
+    text: sourceXml.replace(/<[^>]+>/g, '').trim() || null
+  }));
+}
+
+function findXmlBlocks(xml, tagName) {
+  return [...String(xml ?? '').matchAll(new RegExp(`<${tagName}\\b[\\s\\S]*?</${tagName}>`, 'gi'))].map((match) => match[0]);
+}
+
+function parseStatusSnapshot({ ip, infoXml = '', nowPlayingXml = '', volumeXml = '', sourcesXml = '' }) {
+  return {
+    boseIp: ip,
+    online: /<info\b/i.test(infoXml),
+    deviceName: extractXmlValue(infoXml, 'name') || 'SoundTouch',
+    nowPlaying: {
+      source: extractXmlAttribute(nowPlayingXml, 'source') ?? extractXmlValue(nowPlayingXml, 'source') ?? '',
+      title: extractXmlValue(nowPlayingXml, 'track') ?? extractXmlValue(nowPlayingXml, 'itemName') ?? extractXmlValue(nowPlayingXml, 'stationName') ?? '',
+      artist: extractXmlValue(nowPlayingXml, 'artist') ?? '',
+      playStatus: extractXmlValue(nowPlayingXml, 'playStatus') ?? extractXmlValue(nowPlayingXml, 'state') ?? '',
+      itemName: extractXmlValue(nowPlayingXml, 'itemName') ?? '',
+      stationName: extractXmlValue(nowPlayingXml, 'stationName') ?? ''
+    },
+    volume: Number(extractXmlValue(volumeXml, 'actualvolume') ?? extractXmlValue(volumeXml, 'volume') ?? 0),
+    sources: parseSourcesXml(sourcesXml),
+    updatedAt: timestamp()
+  };
 }
 
 function writeSse(res, event, payload) {
@@ -753,6 +792,36 @@ function sendBridgePostError(res, error) {
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, name: 'SoundTouch Radio Bridge' });
+});
+
+app.get('/api/status', async (req, res) => {
+  const ip = sanitizeIp(req.query.ip ?? process.env.BOSE_DEFAULT_IP ?? process.env.BOSE_IP);
+  if (!ip) {
+    return res.json({
+      boseIp: '',
+      online: false,
+      deviceName: 'SoundTouch',
+      nowPlaying: { source: '', title: '', artist: '', playStatus: 'STOPPED', itemName: '', stationName: '' },
+      volume: 0,
+      sources: [],
+      updatedAt: timestamp()
+    });
+  }
+
+  const [info, nowPlaying, volume, sources] = await Promise.all([
+    fetchSoundTouchExperimental(ip, '/info'),
+    fetchSoundTouchExperimental(ip, '/now_playing'),
+    fetchSoundTouchExperimental(ip, '/volume'),
+    fetchSoundTouchExperimental(ip, '/sources')
+  ]);
+
+  return res.json(parseStatusSnapshot({
+    ip,
+    infoXml: info.ok ? info.body : '',
+    nowPlayingXml: nowPlaying.ok ? nowPlaying.body : '',
+    volumeXml: volume.ok ? volume.body : '',
+    sourcesXml: sources.ok ? sources.body : ''
+  }));
 });
 
 
