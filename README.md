@@ -48,10 +48,32 @@ La V5 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
 - La diagnostica storica (inspector, raw XML, SOAP log, websocket debug, export JSON, experimental select e research panels) non è più visibile nella UI principale: resta accessibile solo aprendo `/dashboard/diagnostics` dal link “Diagnostica avanzata”.
 - Nuova sezione **UPnP Playback Test**: prova sperimentale di `SetAVTransportURI` e `Play` su `http://BOSE_IP:8091/AVTransport/Control`, con polling `/now_playing` dopo il comando e probe `rootDesc.xml`/porta 8091.
 
+## Struttura progetto
+
+La repo è ora organizzata per poter sostituire o rigenerare il frontend React/Vite con Lovable senza toccare il motore locale Bose:
+
+```text
+soundtouch-radio-remote/
+├── server/
+│   └── index.js
+├── data/
+│   └── replacement-presets.json
+├── frontend/
+│   ├── src/
+│   ├── public/
+│   ├── package.json
+│   └── vite.config.ts
+├── README.md
+├── package.json
+└── .env.example
+```
+
+Il backend Express resta nella root come applicazione Node principale, espone tutte le API sotto `/api` e in produzione serve il frontend compilato da `frontend/dist` con fallback SPA per qualsiasi route non `/api`.
+
 ## Requisiti
 
 - Node.js 18 o superiore.
-- Un dispositivo Bose SoundTouch raggiungibile dalla stessa LAN sulla porta `8090`.
+- Un dispositivo Bose SoundTouch raggiungibile dalla stessa LAN sulla porta REST `8090` e, per la riproduzione preset, sulla porta UPnP AVTransport `8091`.
 
 ## Installazione
 
@@ -59,7 +81,9 @@ La V5 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
 npm install
 ```
 
-Copia il file di esempio se vuoi personalizzare porta o timeout delle chiamate API verso un IP Bose attivo:
+La root usa npm workspaces per includere `frontend/`. Se lavori solo sul frontend generato da Lovable puoi anche entrare in `frontend/`, ma gli script root sono quelli consigliati per il progetto completo.
+
+Copia il file di esempio se vuoi personalizzare porta o IP Bose di default:
 
 ```bash
 cp .env.example .env
@@ -69,6 +93,7 @@ Variabili disponibili:
 
 ```ini
 PORT=3001
+BOSE_DEFAULT_IP=
 CLIENT_ORIGIN=http://localhost:5173
 BOSE_REQUEST_TIMEOUT_MS=6000
 ```
@@ -81,27 +106,54 @@ Avvia backend Express e frontend Vite insieme:
 npm run dev
 ```
 
-Apri il frontend all'indirizzo mostrato da Vite, normalmente:
+In sviluppo:
 
-```text
-http://localhost:5173
+- Backend/API: `http://localhost:3001/api/...`
+- Frontend Vite: `http://localhost:5173`
+- Il proxy Vite in `frontend/vite.config.ts` inoltra `/api` al backend locale.
+
+Script utili:
+
+- `npm run dev` avvia Express in watch mode e Vite in parallelo.
+- `npm run dev:server` avvia solo il backend.
+- `npm run dev:client` avvia solo il frontend da `frontend/`.
+- `npm run clean` rimuove cache/build locali di `frontend/`.
+
+## Build
+
+Compila il frontend React/Vite separato:
+
+```bash
+npm run build
 ```
 
-Il backend ascolta su:
+Il comando esegue `npm --prefix frontend run build` e genera:
+
+```text
+frontend/dist/
+```
+
+## Avvio su mini server / produzione LAN
+
+Dopo la build, avvia solo Express:
+
+```bash
+npm start
+```
+
+Express espone le API sotto `/api`, serve gli asset statici da `frontend/dist` e applica fallback SPA su tutte le route non `/api`.
+
+URL finale dalla LAN:
+
+```text
+http://IP_SERVER:3001
+```
+
+Esempio sul server locale:
 
 ```text
 http://localhost:3001
 ```
-
-## Script npm
-
-- `npm install` installa le dipendenze.
-- `npm run dev` avvia Express in watch mode e Vite in parallelo.
-- `npm run dev:server` avvia solo il backend.
-- `npm run dev:client` avvia solo il frontend.
-- `npm run build` compila TypeScript e crea la build Vite.
-- `npm run start` avvia il backend Express.
-- `npm run clean` rimuove cache/build locali (`dist`, `build`, cache Vite e tsbuildinfo).
 
 ## API backend locale
 

@@ -1,29 +1,23 @@
 {
-  "name": "soundtouch-radio-bridge",
+  "name": "soundtouch-radio-remote",
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "description": "Dashboard locale Node.js, Express e React/Vite per testare le API Bose SoundTouch su LAN.",
+  "description": "Backend locale Node.js/Express per controllare Bose SoundTouch e servire il frontend React/Vite buildato.",
+  "workspaces": [
+    "frontend"
+  ],
   "scripts": {
     "dev": "node scripts/clean.js && node scripts/dev.js",
     "dev:server": "node --watch server/index.js",
-    "dev:client": "vite --host 0.0.0.0 --force",
-    "build": "tsc -b && vite build",
-    "preview": "vite preview --host 0.0.0.0",
+    "dev:client": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "preview": "npm --prefix frontend run preview",
     "start": "node server/index.js",
     "clean": "node scripts/clean.js"
   },
   "dependencies": {
     "express": "^4.21.2",
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
     "ws": "^8.18.0"
-  },
-  "devDependencies": {
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "typescript": "^5.6.2",
-    "@vitejs/plugin-react": "^4.3.2",
-    "vite": "^5.4.8"
   }
 }

@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const FRONTEND_DIST_DIR = path.join(__dirname, '..', 'frontend', 'dist');
+const FRONTEND_INDEX_HTML = path.join(FRONTEND_DIST_DIR, 'index.html');
 
 loadLocalEnv();
 
@@ -964,7 +966,7 @@ app.post('/api/replacement-presets/:id/test-stream', async (req, res, next) => {
 
 app.post('/api/replacement-presets/:id/play', async (req, res, next) => {
   try {
-    const boseIp = req.body?.boseIp ?? req.query.boseIp ?? process.env.BOSE_IP;
+    const boseIp = req.body?.boseIp ?? req.query.boseIp ?? process.env.BOSE_DEFAULT_IP ?? process.env.BOSE_IP;
     return res.json(await playReplacementPresetById(boseIp, req.params.id));
   } catch (error) {
     if (error.statusCode || error instanceof TypeError || /streamUrl|Preset|Indirizzo IP|ID preset/.test(error.message ?? '')) {
@@ -1236,6 +1238,23 @@ app.post('/api/bose/:ip/key', async (req, res, next) => {
 
     return next(error);
   }
+});
+
+
+app.use(express.static(FRONTEND_DIST_DIR));
+
+app.get('*', (req, res, next) => {
+  if (req.path.startsWith('/api')) {
+    return next();
+  }
+
+  if (!existsSync(FRONTEND_INDEX_HTML)) {
+    return res.status(404).json({
+      error: 'Frontend build non trovato. Esegui npm run build per generare frontend/dist.'
+    });
+  }
+
+  return res.sendFile(FRONTEND_INDEX_HTML);
 });
 
 app.use((error, _req, res, _next) => {

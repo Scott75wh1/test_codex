@@ -1,13 +1,10 @@
 import { spawn } from 'node:child_process';
-import path from 'node:path';
 
-const viteBin = process.platform === 'win32'
-  ? path.join('node_modules', '.bin', 'vite.cmd')
-  : path.join('node_modules', '.bin', 'vite');
+const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 const commands = [
   { name: 'api', command: process.execPath, args: ['--watch', 'server/index.js'] },
-  { name: 'vite', command: viteBin, args: ['--host', '0.0.0.0', '--force'] }
+  { name: 'vite', command: npmCommand, args: ['--prefix', 'frontend', 'run', 'dev'] }
 ];
 
 const children = commands.map(({ name, command, args }) => {

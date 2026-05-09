@@ -1,13 +1,14 @@
 import { rmSync } from 'node:fs';
 
 const pathsToClean = [
-  'dist',
-  'build',
+  'frontend/dist',
+  'frontend/build',
+  'frontend/node_modules/.vite',
   'node_modules/.vite',
-  'tsconfig.app.tsbuildinfo',
-  'tsconfig.node.tsbuildinfo',
-  'vite.config.js',
-  'vite.config.d.ts'
+  'frontend/tsconfig.app.tsbuildinfo',
+  'frontend/tsconfig.node.tsbuildinfo',
+  'frontend/vite.config.js',
+  'frontend/vite.config.d.ts'
 ];
 
 for (const targetPath of pathsToClean) {
