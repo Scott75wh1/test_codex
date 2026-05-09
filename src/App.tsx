@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 type BoseEndpoint = 'info' | 'now_playing' | 'sources' | 'volume';
 type BoseKey = 'PLAY_PAUSE' | 'STOP' | 'VOLUME_UP' | 'VOLUME_DOWN';
+type ConnectionStatus = 'online' | 'offline' | 'timeout' | 'non Bose' | 'idle' | 'scanning';
 
 type ApiResponse = {
   title: string;
@@ -18,7 +19,34 @@ type Radio = {
   streamUrl: string;
 };
 
+type DiscoveredDevice = {
+  ip: string;
+  status: ConnectionStatus;
+  name: string;
+  deviceID: string;
+  productType?: string | null;
+  durationMs?: number;
+};
+
+type TechnicalLog = {
+  timestamp: string;
+  ip?: string;
+  status: ConnectionStatus | string;
+  durationMs?: number;
+  message: string;
+};
+
+type DiscoverResponse = {
+  devices: DiscoveredDevice[];
+  logs: TechnicalLog[];
+  subnet?: { cidr: string; address: string; interfaceName: string };
+  scannedHosts?: number;
+  durationMs?: number;
+  error?: string;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
+const LAST_IP_STORAGE_KEY = 'soundtouch-radio-bridge:last-ip';
 const ENDPOINTS: Array<{ id: BoseEndpoint; label: string; method: string }> = [
   { id: 'info', label: 'Info dispositivo', method: 'GET /info' },
   { id: 'now_playing', label: 'Now playing', method: 'GET /now_playing' },
@@ -35,7 +63,17 @@ function makeInitialResponse(): ApiResponse {
   return {
     title: 'Nessuna richiesta eseguita',
     status: 'idle',
-    body: 'Inserisci l’IP del Bose SoundTouch e scegli un comando.'
+    body: 'Inserisci l’IP del Bose SoundTouch, cerca i dispositivi sulla LAN o scegli un comando.'
+  };
+}
+
+function makeLog(status: TechnicalLog['status'], message: string, ip?: string, durationMs?: number): TechnicalLog {
+  return {
+    timestamp: new Date().toISOString(),
+    status,
+    message,
+    ip,
+    durationMs
   };
 }
 
@@ -74,11 +112,38 @@ async function readResponseBody(response: Response) {
   return response.text();
 }
 
+function statusFromInfoResponse(response: Response, body: string): ConnectionStatus {
+  if (response.ok && /<info\b/i.test(body)) {
+    return 'online';
+  }
+
+  if (response.status === 504 || /timeout/i.test(body)) {
+    return 'timeout';
+  }
+
+  if (response.ok) {
+    return 'non Bose';
+  }
+
+  return 'offline';
+}
+
+function getStoredIp() {
+  return window.localStorage.getItem(LAST_IP_STORAGE_KEY) ?? '192.168.1.50';
+}
+
 export default function App() {
-  const [boseIp, setBoseIp] = useState('192.168.1.50');
+  const [boseIp, setBoseIp] = useState(() => getStoredIp());
   const [volume, setVolume] = useState(30);
   const [response, setResponse] = useState<ApiResponse>(() => makeInitialResponse());
   const [radios, setRadios] = useState<Radio[]>([]);
+  const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
+  const [technicalLogs, setTechnicalLogs] = useState<TechnicalLog[]>([
+    makeLog('idle', 'Dashboard pronta. Cerca dispositivi Bose o testa l’IP attivo.')
+  ]);
+  const [discovering, setDiscovering] = useState(false);
+  const [lastScanSummary, setLastScanSummary] = useState('Nessuna scansione eseguita.');
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
 
@@ -89,35 +154,94 @@ export default function App() {
       .catch(() => setRadios([]));
   }, []);
 
-  async function runRequest(title: string, request: () => Promise<Response>) {
+  function appendLog(log: TechnicalLog) {
+    setTechnicalLogs((prev) => [log, ...prev].slice(0, 300));
+  }
+
+  function appendLogs(logs: TechnicalLog[]) {
+    setTechnicalLogs((prev) => [...logs.reverse(), ...prev].slice(0, 300));
+  }
+
+  function setActiveIp(ip: string, source: string) {
+    setBoseIp(ip);
+    window.localStorage.setItem(LAST_IP_STORAGE_KEY, ip);
+    appendLog(makeLog('online', `IP attivo impostato da ${source}: ${ip}`, ip));
+  }
+
+  async function runRequest(title: string, request: () => Promise<Response>, endpoint?: BoseEndpoint) {
     if (!canSend) {
+      setConnectionStatus('offline');
       setResponse({ title, status: 'error', body: 'Inserisci prima un indirizzo IP Bose valido.', timestamp: now() });
+      appendLog(makeLog('offline', 'Richiesta annullata: IP Bose mancante.'));
       return;
     }
 
     setResponse({ title, status: 'loading', body: 'Richiesta in corso sulla LAN…', timestamp: now() });
+    appendLog(makeLog('scanning', `${title} verso ${boseIp}`, boseIp));
 
     try {
       const apiResponse = await request();
       const body = await readResponseBody(apiResponse);
+      const requestStatus = apiResponse.ok ? 'success' : 'error';
       setResponse({
         title: `${title} — HTTP ${apiResponse.status}`,
-        status: apiResponse.ok ? 'success' : 'error',
+        status: requestStatus,
         body,
         timestamp: now()
       });
+
+      if (endpoint === 'info') {
+        const nextStatus = statusFromInfoResponse(apiResponse, body);
+        setConnectionStatus(nextStatus);
+        appendLog(makeLog(nextStatus, `GET /info completato con stato ${nextStatus}.`, boseIp));
+        if (nextStatus === 'online') {
+          window.localStorage.setItem(LAST_IP_STORAGE_KEY, boseIp);
+        }
+      }
     } catch (error) {
-      setResponse({
-        title,
-        status: 'error',
-        body: error instanceof Error ? error.message : 'Errore sconosciuto.',
-        timestamp: now()
-      });
+      setConnectionStatus('offline');
+      const message = error instanceof Error ? error.message : 'Errore sconosciuto.';
+      setResponse({ title, status: 'error', body: message, timestamp: now() });
+      appendLog(makeLog('offline', message, boseIp));
+    }
+  }
+
+  async function discoverDevices() {
+    setDiscovering(true);
+    setConnectionStatus('scanning');
+    setLastScanSummary('Scansione subnet locale in corso: IP .1-.254, timeout 800ms per host.');
+    appendLog(makeLog('scanning', 'Avvio scansione LAN Bose SoundTouch.'));
+
+    try {
+      const res = await fetch(`${API_BASE}/discover`);
+      const payload = (await res.json()) as DiscoverResponse;
+      setDevices(payload.devices ?? []);
+      appendLogs(payload.logs ?? []);
+
+      const summary = payload.error
+        ? payload.error
+        : `Scansione ${payload.subnet?.cidr ?? 'subnet locale'} completata: ${payload.devices?.length ?? 0} device Bose trovati su ${payload.scannedHosts ?? 254} host in ${payload.durationMs ?? 0}ms.`;
+      setLastScanSummary(summary);
+      appendLog(makeLog(payload.devices?.length ? 'online' : 'offline', summary));
+
+      if (payload.devices?.length) {
+        setConnectionStatus('online');
+        setActiveIp(payload.devices[0].ip, 'scansione automatica');
+      } else {
+        setConnectionStatus(res.ok ? 'offline' : 'timeout');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Errore sconosciuto durante la scansione.';
+      setConnectionStatus('offline');
+      setLastScanSummary(message);
+      appendLog(makeLog('offline', message));
+    } finally {
+      setDiscovering(false);
     }
   }
 
   function getEndpoint(endpoint: BoseEndpoint) {
-    void runRequest(`GET /${endpoint}`, () => fetch(`${API_BASE}/bose/${encodedIp}/${endpoint}`));
+    void runRequest(`GET /${endpoint}`, () => fetch(`${API_BASE}/bose/${encodedIp}/${endpoint}`), endpoint);
   }
 
   function postVolume() {
@@ -144,15 +268,16 @@ export default function App() {
     <div className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">LAN testing dashboard</p>
+          <p className="eyebrow">LAN testing dashboard · V2</p>
           <h1>SoundTouch Radio Bridge</h1>
           <p className="subtitle">
-            App locale Node.js + Express + React/Vite per provare le API Bose SoundTouch sulla rete di casa.
+            App locale Node.js + Express + React/Vite per trovare Bose SoundTouch 30 in LAN e provare le API SoundTouch.
           </p>
         </div>
-        <div className="status-card">
-          <span>Backend</span>
-          <strong>{API_BASE}</strong>
+        <div className={`status-card connection-${connectionStatus.replace(' ', '-')}`}>
+          <span>Connessione</span>
+          <strong>{connectionStatus}</strong>
+          <small>IP attivo: {boseIp || 'n/d'}</small>
         </div>
       </header>
 
@@ -167,14 +292,44 @@ export default function App() {
               id="bose-ip"
               value={boseIp}
               onChange={(event) => setBoseIp(event.target.value)}
+              onBlur={() => window.localStorage.setItem(LAST_IP_STORAGE_KEY, boseIp)}
               placeholder="es. 192.168.1.50"
               inputMode="decimal"
             />
             <button type="button" onClick={() => getEndpoint('info')} disabled={!canSend}>
               Test GET /info
             </button>
+            <button type="button" onClick={discoverDevices} disabled={discovering}>
+              {discovering ? 'Scansione…' : 'Cerca dispositivi Bose'}
+            </button>
           </div>
-          <p className="hint">Il backend inoltra le richieste a http://IP:8090 senza usare Cloud Task.</p>
+          <p className="hint">Il backend rileva la subnet locale del server Node e scansiona gli IP .1-.254 su http://IP:8090/info.</p>
+
+          <div className="discovery-box">
+            <div className="discovery-heading">
+              <h3>Dispositivi trovati</h3>
+              <span>{lastScanSummary}</span>
+            </div>
+            {devices.length === 0 ? (
+              <p className="hint">Nessun device Bose rilevato nella scansione corrente.</p>
+            ) : (
+              <div className="device-list">
+                {devices.map((device) => (
+                  <button
+                    className="device-card"
+                    key={`${device.ip}-${device.deviceID}`}
+                    type="button"
+                    onClick={() => setActiveIp(device.ip, `click su ${device.name}`)}
+                  >
+                    <strong>{device.name}</strong>
+                    <span>{device.ip}</span>
+                    <small>deviceID: {device.deviceID}</small>
+                    <small>tipo: {device.productType ?? 'n/d'}</small>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
 
           <div className="command-group">
             <h3>Endpoint GET</h3>
@@ -230,6 +385,26 @@ export default function App() {
           <pre>{response.body}</pre>
         </section>
       </main>
+
+      <section className="panel log-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">Diagnostica V2</p>
+            <h2>Log tecnico</h2>
+          </div>
+          <span>{technicalLogs.length} eventi</span>
+        </div>
+        <div className="log-list">
+          {technicalLogs.map((log, index) => (
+            <div className={`log-row connection-${String(log.status).replace(' ', '-')}`} key={`${log.timestamp}-${index}`}>
+              <span>{new Date(log.timestamp).toLocaleTimeString('it-IT')}</span>
+              <strong>{log.status}</strong>
+              <code>{log.ip ?? '-'}</code>
+              <p>{log.message}{typeof log.durationMs === 'number' ? ` · ${log.durationMs}ms` : ''}</p>
+            </div>
+          ))}
+        </div>
+      </section>
 
       <section className="panel radios-panel">
         <div>

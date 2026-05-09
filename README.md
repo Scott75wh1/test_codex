@@ -2,11 +2,16 @@
 
 Dashboard locale **Node.js + Express + React/Vite** per testare le API Bose SoundTouch sulla LAN.
 
-La V1 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che inoltra le richieste HTTP al dispositivo Bose su `http://IP:8090`.
+La V2 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che rileva la subnet LAN del server Node, cerca dispositivi Bose SoundTouch e inoltra le richieste HTTP/XML al dispositivo su `http://IP:8090`.
 
-## Funzioni V1
+## Funzioni V2
 
-- Campo per l'indirizzo IP del Bose SoundTouch.
+- Campo per l'indirizzo IP del Bose SoundTouch con salvataggio dell'ultimo IP funzionante in `localStorage`.
+- Pulsante **Cerca dispositivi Bose** che chiama `GET /api/discover`.
+- Discovery LAN lato backend: rileva la subnet IPv4 locale del server Node e scansiona gli host `.1` - `.254` su `http://IP:8090/info` con timeout di 800ms per IP.
+- Stato connessione in dashboard: `online`, `offline`, `timeout`, `non Bose` o `scanning`.
+- Pannello log tecnico con timestamp, IP, stato e durata.
+- Click su un device trovato per impostarlo come IP attivo.
 - Test `GET http://IP:8090/info`.
 - Proxy locale per:
   - `GET /info`
@@ -15,7 +20,7 @@ La V1 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
   - `GET /volume`
   - `POST /volume` con payload XML `<volume>...</volume>`
   - `POST /key` per `PLAY_PAUSE`, `STOP`, `VOLUME_UP`, `VOLUME_DOWN`
-- Lista di radio web in `data/radios.json`, esposta da `GET /api/radios`, pronta come base dati per la V2.
+- Lista di radio web in `data/radios.json`, esposta da `GET /api/radios`, pronta come base dati per preset/streaming futuri.
 
 ## Requisiti
 
@@ -28,7 +33,7 @@ La V1 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
 npm install
 ```
 
-Copia il file di esempio se vuoi personalizzare porta o timeout:
+Copia il file di esempio se vuoi personalizzare porta o timeout delle chiamate API verso un IP Bose attivo:
 
 ```bash
 cp .env.example .env
@@ -70,8 +75,17 @@ http://localhost:3001
 - `npm run dev:client` avvia solo il frontend.
 - `npm run build` compila TypeScript e crea la build Vite.
 - `npm run start` avvia il backend Express.
+- `npm run clean` rimuove cache/build locali (`dist`, `build`, cache Vite e tsbuildinfo).
 
 ## API backend locale
+
+Discovery automatico dalla subnet locale del server Node:
+
+```bash
+curl http://localhost:3001/api/discover
+```
+
+La risposta include `devices` con nome, IP, `deviceID` e tipo prodotto se presente, più `logs` tecnici per gli host scansionati.
 
 Sostituisci `192.168.1.50` con l'IP del tuo Bose.
 

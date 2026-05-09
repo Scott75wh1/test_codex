@@ -1,6 +1,7 @@
 import express from 'express';
 import { readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -73,6 +74,126 @@ function sanitizeIp(ip) {
 
 function soundTouchUrl(ip, endpoint) {
   return `http://${ip}:${BOSE_PORT}${endpoint}`;
+}
+
+
+function timestamp() {
+  return new Date().toISOString();
+}
+
+function getLocalSubnets() {
+  const interfaces = os.networkInterfaces();
+  const subnets = [];
+
+  for (const [name, addresses] of Object.entries(interfaces)) {
+    for (const address of addresses ?? []) {
+      if (address.family !== 'IPv4' || address.internal) {
+        continue;
+      }
+
+      const parts = address.address.split('.');
+      if (parts.length !== 4) {
+        continue;
+      }
+
+      const base = parts.slice(0, 3).join('.');
+      if (!subnets.some((subnet) => subnet.base === base)) {
+        subnets.push({ interfaceName: name, address: address.address, base, cidr: `${base}.0/24` });
+      }
+    }
+  }
+
+  return subnets;
+}
+
+function extractXmlValue(xml, tagName) {
+  const match = xml.match(new RegExp(`<${tagName}[^>]*>([^<]*)</${tagName}>`, 'i'));
+  return match?.[1]?.trim() || null;
+}
+
+function extractXmlAttribute(xml, attributeName) {
+  const match = xml.match(new RegExp(`${attributeName}="([^"]+)"`, 'i'));
+  return match?.[1]?.trim() || null;
+}
+
+function parseBoseInfoXml(xml) {
+  if (!xml || !/<info\b/i.test(xml)) {
+    return null;
+  }
+
+  const deviceID = extractXmlAttribute(xml, 'deviceID') ?? extractXmlValue(xml, 'deviceID');
+  const name = extractXmlValue(xml, 'name');
+  const productType = extractXmlValue(xml, 'type') ?? extractXmlValue(xml, 'product') ?? extractXmlValue(xml, 'productType');
+  const hasBoseMarker = /soundtouch|bose/i.test(xml) || Boolean(deviceID);
+
+  if (!hasBoseMarker) {
+    return null;
+  }
+
+  return {
+    name: name || 'Bose SoundTouch',
+    deviceID: deviceID || 'n/d',
+    productType: productType || null
+  };
+}
+
+async function probeSoundTouchInfo(ip, timeoutMs = 800) {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(soundTouchUrl(ip, '/info'), {
+      signal: controller.signal,
+      headers: { Accept: 'application/xml' }
+    });
+    const body = await response.text();
+    const durationMs = Date.now() - startedAt;
+
+    if (!response.ok) {
+      return { ip, status: 'offline', httpStatus: response.status, durationMs };
+    }
+
+    const info = parseBoseInfoXml(body);
+    if (!info) {
+      return { ip, status: 'non Bose', httpStatus: response.status, durationMs };
+    }
+
+    return { ip, status: 'online', httpStatus: response.status, durationMs, ...info };
+  } catch (error) {
+    const durationMs = Date.now() - startedAt;
+    if (error.name === 'AbortError') {
+      return { ip, status: 'timeout', durationMs };
+    }
+
+    return { ip, status: 'offline', durationMs, error: error.code ?? error.cause?.code ?? error.message };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function scanSubnet(subnet) {
+  const startedAt = Date.now();
+  const ips = Array.from({ length: 254 }, (_, index) => `${subnet.base}.${index + 1}`);
+  const results = await Promise.all(ips.map((ip) => probeSoundTouchInfo(ip)));
+  const devices = results.filter((result) => result.status === 'online');
+  const logs = results.map((result) => ({
+    timestamp: timestamp(),
+    ip: result.ip,
+    status: result.status,
+    durationMs: result.durationMs,
+    message: result.status === 'online'
+      ? `Bose trovato: ${result.name} (${result.deviceID})`
+      : result.error || `HTTP ${result.httpStatus ?? 'n/d'}`
+  }));
+
+  return {
+    subnet,
+    scannedHosts: ips.length,
+    durationMs: Date.now() - startedAt,
+    devices,
+    logs
+  };
 }
 
 async function fetchSoundTouch(ip, endpoint, options = {}) {
@@ -189,6 +310,40 @@ function sendBridgePostError(res, error) {
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, name: 'SoundTouch Radio Bridge' });
+});
+
+
+app.get('/api/discover', async (_req, res, next) => {
+  try {
+    const subnets = getLocalSubnets();
+    if (subnets.length === 0) {
+      return res.status(500).json({
+        error: 'Nessuna subnet IPv4 LAN rilevata sul server Node.',
+        devices: [],
+        logs: [{ timestamp: timestamp(), status: 'offline', message: 'Nessuna interfaccia IPv4 non interna disponibile.' }]
+      });
+    }
+
+    const scans = [];
+    for (const subnet of subnets) {
+      scans.push(await scanSubnet(subnet));
+    }
+
+    const devices = scans.flatMap((scan) => scan.devices);
+    const logs = scans.flatMap((scan) => scan.logs);
+
+    return res.json({
+      subnet: scans[0].subnet,
+      subnets: scans.map((scan) => scan.subnet),
+      scannedHosts: scans.reduce((total, scan) => total + scan.scannedHosts, 0),
+      durationMs: scans.reduce((total, scan) => total + scan.durationMs, 0),
+      devices,
+      logs,
+      availableSubnets: subnets
+    });
+  } catch (error) {
+    return next(error);
+  }
 });
 
 app.get('/api/radios', async (_req, res, next) => {
