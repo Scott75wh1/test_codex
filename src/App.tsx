@@ -457,6 +457,10 @@ function parseExperimentalXml(xml: string) {
   const rootTag = xml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1] ?? 'raw';
   const firstTag = xml.match(/<[^!?][^>]*>/)?.[0] ?? '';
   const interestingTags = ['ContentItem', 'capability', 'capabilities', 'endpoint', 'url', 'service', 'sourceItem', 'recent', 'nowSelection', 'selection'];
+  const absoluteUrls = [...xml.matchAll(/https?:\/\/[^\s<"]+/gi)].map((match) => match[0]);
+  const urlElements = [...xml.matchAll(/<url\b[^>]*>([^<]+)<\/url>/gi)].map((match) => match[1].trim()).filter(Boolean);
+  const urlAttributes = [...xml.matchAll(/\b(?:url|href|location|endpoint|path)="([^"]+)"/gi)].map((match) => match[1].trim()).filter(Boolean);
+  const urls = [...new Set([...absoluteUrls, ...urlElements, ...urlAttributes])];
 
   return {
     rootTag,
@@ -468,7 +472,8 @@ function parseExperimentalXml(xml: string) {
       rawXml: block
     })),
     sourceItems: parseSourcesXml(xml),
-    links: [...xml.matchAll(/https?:\/\/[^\s<"]+/gi)].map((match) => match[0]),
+    links: absoluteUrls,
+    urls,
     highlightedTerms: CAPABILITY_HIGHLIGHT_PATTERNS.filter((pattern) => new RegExp(pattern, 'i').test(xml))
   };
 }
@@ -1331,9 +1336,9 @@ export default function App() {
         fetchPresetResearchSnapshot()
       ]);
       const keyResult = await sendPresetLabKey(command);
-      await waitFor(700);
+      await waitFor(1500);
       const [nowPlayingAfter, presetsAfter] = await Promise.all([
-        fetchPresetLabNowPlaying(700),
+        fetchPresetLabNowPlaying(1500),
         fetchPresetResearchSnapshot()
       ]);
       const presetSummary = summarizePresetChange(presetsBefore, presetsAfter);
@@ -1425,6 +1430,7 @@ export default function App() {
       JSON.stringify({
         exportedAt: new Date().toISOString(),
         activeIp: boseIp,
+        presetDiagnosis: getPresetDiagnosis(),
         presetLabHistory,
         recentsResearch,
         capabilitiesResearch,
@@ -1434,6 +1440,26 @@ export default function App() {
     );
   }
 
+  function getPresetDiagnosis() {
+    const presetKeyExperiments = presetLabHistory.filter((item) => /^PRESET_[1-6]$/.test(item.command));
+    const latestPresetExperiment = presetKeyExperiments[0];
+    const presetExists = getParsedPresets().length > 0 || presetLabHistory.some((item) => (item.presetsBefore?.parsed.presetCount ?? item.presetsAfter?.parsed.presetCount ?? 0) > 0);
+    const keyAccepted = Boolean(latestPresetExperiment && /"status":\s*200|HTTP 200/i.test(latestPresetExperiment.responseBose));
+    const invalidSourceExperiment = presetKeyExperiments.find((item) => item.nowPlayingAfter.some((poll) => poll.parsed.source === 'INVALID_SOURCE' || /INVALID_SOURCE/i.test(poll.nowPlayingXml)));
+    const nowPlayingBecomesInvalidSource = Boolean(invalidSourceExperiment);
+
+    return {
+      presetExists,
+      keyAccepted,
+      nowPlayingBecomesInvalidSource,
+      likelyCloudResolutionMissing: presetExists && keyAccepted && nowPlayingBecomesInvalidSource,
+      latestPresetCommand: latestPresetExperiment?.command ?? null,
+      invalidSourceCommand: invalidSourceExperiment?.command ?? null
+    };
+  }
+
+
+  const presetDiagnosis = getPresetDiagnosis();
 
   return (
     <div className="app-shell">
@@ -1973,6 +1999,31 @@ export default function App() {
           Laboratorio per capire se le API locali ufficiali possono richiamare preset legacy, trasformare lo stream corrente in preset con ADD_FAVORITE, usare recents come ponte o scoprire capability locali non esposte.
         </p>
 
+        <div className="preset-diagnosis-card">
+          <h3>Preset diagnosis</h3>
+          <div className="diagnosis-grid">
+            <article className={presetDiagnosis.presetExists ? 'ok' : 'pending'}>
+              <span>preset exists</span>
+              <strong>{presetDiagnosis.presetExists ? 'sì' : 'non confermato'}</strong>
+            </article>
+            <article className={presetDiagnosis.keyAccepted ? 'ok' : 'pending'}>
+              <span>key accepted</span>
+              <strong>{presetDiagnosis.keyAccepted ? 'HTTP 200 rilevato' : 'da testare'}</strong>
+            </article>
+            <article className={presetDiagnosis.nowPlayingBecomesInvalidSource ? 'warn' : 'pending'}>
+              <span>nowPlaying becomes INVALID_SOURCE</span>
+              <strong>{presetDiagnosis.nowPlayingBecomesInvalidSource ? `sì (${presetDiagnosis.invalidSourceCommand})` : 'non rilevato'}</strong>
+            </article>
+            <article className={presetDiagnosis.likelyCloudResolutionMissing ? 'warn' : 'pending'}>
+              <span>likely cloud resolution missing</span>
+              <strong>{presetDiagnosis.likelyCloudResolutionMissing ? 'probabile' : 'non concluso'}</strong>
+            </article>
+          </div>
+          <p className="hint">
+            Se un tasto preset è accettato ma /now_playing passa a INVALID_SOURCE, il preset legacy probabilmente esiste ancora nella cassa ma il servizio cloud/TuneIn non risolve più lo stream audio.
+          </p>
+        </div>
+
         <div className="preset-lab-grid">
           <section>
             <h3>1. Preset key test</h3>
@@ -1988,7 +2039,7 @@ export default function App() {
 
           <section>
             <h3>2. Favorite test</h3>
-            <p className="hint">ADD_FAVORITE e REMOVE_FAVORITE vengono inviati come key press+release. Dopo il comando ricarico /presets e confronto updatedOn/ContentItem.</p>
+            <p className="hint">ADD_FAVORITE e REMOVE_FAVORITE vengono inviati come key press+release. Dopo il comando aspetto 1500ms, ricarico /presets e confronto updatedOn/ContentItem.</p>
             <div className="template-row">
               <button type="button" onClick={() => void runFavoriteExperiment('ADD_FAVORITE')} disabled={!canSend || presetLabLoading}>
                 ADD_FAVORITE
@@ -2021,24 +2072,32 @@ export default function App() {
 
         <div className="preset-research-endpoints">
           {([['Recents', recentsResearch], ['Capabilities', capabilitiesResearch], ['Now selection', nowSelectionResearch]] as Array<[string, ExperimentalEndpointResult | null]>).map(([label, result]) => (
-            <details key={label} open={Boolean(result?.ok)}>
-              <summary>{label}: {result ? `HTTP ${result.status}` : 'non testato'}</summary>
-              {result ? (
-                <>
-                  {label === 'Capabilities' ? (
+            <details key={label} open={Boolean(result)}>
+              <summary>{label}: {result ? `HTTP ${result.status} · ${result.ok ? 'ok' : 'errore/non disponibile'}` : 'non testato'}</summary>
+              {result ? (() => {
+                const parsed = parseExperimentalXml(result.body);
+                const isXml = result.contentType.includes('xml') || /^\s*</.test(result.body);
+
+                return (
+                  <>
                     <div className="capability-highlights">
-                      {parseExperimentalXml(result.body).highlightedTerms.length === 0 ? <span>Nessun termine evidenziato.</span> : parseExperimentalXml(result.body).highlightedTerms.map((term) => <mark key={term}>{term}</mark>)}
+                      <mark className={result.ok ? 'ok' : 'error'}>{result.ok ? 'endpoint disponibile' : 'raw errore preservato'}</mark>
+                      {parsed.highlightedTerms.map((term) => <mark key={term}>{term}</mark>)}
                     </div>
-                  ) : null}
-                  {label === 'Now selection' ? (
-                    <p className="hint">Eventi websocket nowSelectionUpdated correlati: {realtimeEvents.filter((event) => event.eventName === 'nowSelectionUpdated' || /<nowSelectionUpdated\b/i.test(event.raw ?? '')).length}</p>
-                  ) : null}
-                  <h4>Parsed JSON</h4>
-                  <pre>{JSON.stringify(parseExperimentalXml(result.body), null, 2)}</pre>
-                  <h4>Raw response</h4>
-                  <pre>{result.contentType.includes('xml') || /^\s*</.test(result.body) ? formatXml(result.body) : result.body}</pre>
-                </>
-              ) : <p className="hint">Premi il pulsante GET per interrogare l’endpoint.</p>}
+                    <h4>URL disponibili</h4>
+                    <div className="url-highlight-list">
+                      {parsed.urls.length === 0 ? <span>Nessun URL rilevato nel payload.</span> : parsed.urls.map((url) => <code key={url}>{url}</code>)}
+                    </div>
+                    {label === 'Now selection' ? (
+                      <p className="hint">Eventi websocket nowSelectionUpdated correlati: {realtimeEvents.filter((event) => event.eventName === 'nowSelectionUpdated' || /<nowSelectionUpdated\b/i.test(event.raw ?? '')).length}</p>
+                    ) : null}
+                    <h4>Parsed JSON</h4>
+                    <pre>{JSON.stringify(parsed, null, 2)}</pre>
+                    <h4>{result.ok ? 'Raw XML / response' : 'Raw errore / response'}</h4>
+                    <pre>{isXml ? formatXml(result.body) : result.body}</pre>
+                  </>
+                );
+              })() : <p className="hint">Premi il pulsante GET per interrogare l’endpoint.</p>}
             </details>
           ))}
         </div>
