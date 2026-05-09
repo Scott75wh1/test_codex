@@ -110,6 +110,38 @@ type SelectResult = {
   errorUpdateRaw?: string | null;
 };
 
+type LocalRadioTemplateId = 'A' | 'B' | 'C' | 'D' | 'Manual';
+
+type LocalRadioTemplate = {
+  id: Exclude<LocalRadioTemplateId, 'Manual'>;
+  label: string;
+  description: string;
+  source: 'LOCAL_INTERNET_RADIO' | 'TUNEIN';
+  typeAttribute: 'stationurl' | 'url' | null;
+};
+
+type LocalRadioPoll = {
+  delayMs: number;
+  timestamp: string;
+  httpStatus: number | null;
+  nowPlayingXml: string;
+  parsed: ReturnType<typeof parseRestSnapshot>;
+};
+
+type LocalRadioTestResult = {
+  templateId: LocalRadioTemplateId;
+  templateLabel: string;
+  radioName: string;
+  streamUrl: string;
+  requestXml: string;
+  responseBody: string;
+  httpStatus: number | null;
+  timestamp: string;
+  nowPlaying: LocalRadioPoll[];
+  errorUpdateRaw?: string | null;
+  outcome: 'pending' | 'success' | 'failed' | 'error';
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 const LAST_IP_STORAGE_KEY = 'soundtouch-radio-bridge:last-ip';
 const ENDPOINTS: Array<{ id: BoseEndpoint; label: string; method: string }> = [
@@ -125,6 +157,37 @@ const SELECT_TEMPLATES = {
   localInternetRadio: '<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl" location="http://example.com/stream.mp3" sourceAccount="" isPresetable="true">\n  <itemName>Manual Web Radio</itemName>\n</ContentItem>',
   upnp: '<ContentItem source="UPNP" type="object.item.audioItem.musicTrack" location="0$0$TRACK_ID" sourceAccount="" isPresetable="true">\n  <itemName>UPNP manual item</itemName>\n</ContentItem>'
 };
+const LOCAL_RADIO_TEMPLATES: LocalRadioTemplate[] = [
+  {
+    id: 'A',
+    label: 'Template A · LOCAL stationurl',
+    description: 'source LOCAL_INTERNET_RADIO con type="stationurl".',
+    source: 'LOCAL_INTERNET_RADIO',
+    typeAttribute: 'stationurl'
+  },
+  {
+    id: 'B',
+    label: 'Template B · LOCAL senza type',
+    description: 'source LOCAL_INTERNET_RADIO senza attributo type.',
+    source: 'LOCAL_INTERNET_RADIO',
+    typeAttribute: null
+  },
+  {
+    id: 'C',
+    label: 'Template C · LOCAL url',
+    description: 'source LOCAL_INTERNET_RADIO con type="url".',
+    source: 'LOCAL_INTERNET_RADIO',
+    typeAttribute: 'url'
+  },
+  {
+    id: 'D',
+    label: 'Template D · TUNEIN direct URL',
+    description: 'source TUNEIN con type="stationurl" ma location impostata allo stream diretto.',
+    source: 'TUNEIN',
+    typeAttribute: 'stationurl'
+  }
+];
+const LOCAL_RADIO_POLL_DELAYS = [500, 1500, 3000, 5000];
 
 function now() {
   return new Date().toLocaleTimeString('it-IT');
@@ -146,6 +209,21 @@ function makeLog(status: TechnicalLog['status'], message: string, ip?: string, d
     ip,
     durationMs
   };
+}
+
+function escapeXmlText(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function buildLocalRadioSelectXml(template: LocalRadioTemplate, streamUrl: string, radioName: string) {
+  const typeAttribute = template.typeAttribute ? ` type="${template.typeAttribute}"` : '';
+
+  return `<ContentItem source="${template.source}"${typeAttribute} location="${escapeXmlText(streamUrl)}" sourceAccount="" isPresetable="true">\n  <itemName>${escapeXmlText(radioName)}</itemName>\n</ContentItem>`;
 }
 
 function formatBridgePostResponse(payload: unknown) {
@@ -357,7 +435,14 @@ export default function App() {
   const [selectResult, setSelectResult] = useState<SelectResult | null>(null);
   const [selectHistory, setSelectHistory] = useState<SelectResult[]>([]);
   const [selectLoading, setSelectLoading] = useState(false);
+  const [localRadioXml, setLocalRadioXml] = useState('');
+  const [localRadioCustomStreamUrl, setLocalRadioCustomStreamUrl] = useState('');
+  const [localRadioResult, setLocalRadioResult] = useState<LocalRadioTestResult | null>(null);
+  const [localRadioHistory, setLocalRadioHistory] = useState<LocalRadioTestResult[]>([]);
+  const [localRadioLoading, setLocalRadioLoading] = useState(false);
+  const [browserStreamUrl, setBrowserStreamUrl] = useState('');
   const lastRealtimeErrorRawRef = useRef<string | null>(null);
+  const browserAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
@@ -819,6 +904,188 @@ export default function App() {
   }
 
 
+  function getLocalRadioStreamUrl(radio?: Radio) {
+    return localRadioCustomStreamUrl.trim() || radio?.streamUrl || '';
+  }
+
+  function makeLocalRadioXml(template: LocalRadioTemplate, radio?: Radio) {
+    const streamUrl = getLocalRadioStreamUrl(radio);
+    const radioName = radio?.name ?? 'Custom Direct Stream';
+
+    return buildLocalRadioSelectXml(template, streamUrl, radioName);
+  }
+
+  function previewLocalRadioTemplate(template: LocalRadioTemplate, radio?: Radio) {
+    const xml = makeLocalRadioXml(template, radio);
+    setLocalRadioXml(xml);
+  }
+
+  function getLatestLocalRadioPoll(polls: LocalRadioPoll[]) {
+    return polls.length > 0 ? polls[polls.length - 1] : null;
+  }
+
+  function getLocalRadioOutcome(polls: LocalRadioPoll[], templateId: LocalRadioTemplateId, errorUpdateRaw?: string | null): LocalRadioTestResult['outcome'] {
+    if (errorUpdateRaw) {
+      return 'error';
+    }
+
+    const latestPoll = getLatestLocalRadioPoll(polls);
+    const latestSource = String(latestPoll?.parsed.source ?? '').toUpperCase();
+    const expectedSource = templateId === 'D' ? 'TUNEIN' : 'LOCAL_INTERNET_RADIO';
+
+    return latestSource === expectedSource ? 'success' : 'failed';
+  }
+
+  async function pollLocalRadioNowPlaying(delayMs: number): Promise<LocalRadioPoll> {
+    const response = await fetch(`${API_BASE}/bose/${encodedIp}/now_playing`);
+    const nowPlayingXml = await response.text();
+    const parsed = parseRestSnapshot(nowPlayingXml, '');
+
+    setRealtimeSnapshot((prev) => ({
+      source: parsed.source || prev.source,
+      title: parsed.title || prev.title,
+      artist: parsed.artist || prev.artist,
+      playStatus: parsed.playStatus || prev.playStatus,
+      itemName: parsed.itemName || prev.itemName,
+      stationName: parsed.stationName || prev.stationName,
+      volume: prev.volume
+    }));
+
+    return {
+      delayMs,
+      timestamp: new Date().toISOString(),
+      httpStatus: response.status,
+      nowPlayingXml,
+      parsed
+    };
+  }
+
+  async function runLocalRadioXmlTest(options: { templateId: LocalRadioTemplateId; templateLabel: string; radioName: string; streamUrl: string; xml: string }) {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Local Internet Radio test annullato: IP Bose mancante.'));
+      return;
+    }
+
+    const requestXml = options.xml.trim();
+    if (!requestXml) {
+      appendLog(makeLog('offline', 'Local Internet Radio test annullato: XML vuoto.'));
+      return;
+    }
+
+    setLocalRadioLoading(true);
+    lastRealtimeErrorRawRef.current = null;
+    const startedAt = new Date().toISOString();
+
+    try {
+      const response = await fetch(`${API_BASE}/bose/${encodedIp}/select`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/xml',
+          Accept: 'application/xml'
+        },
+        body: requestXml
+      });
+      const responseBody = await readResponseBody(response);
+      let nextResult: LocalRadioTestResult = {
+        ...options,
+        requestXml,
+        responseBody,
+        httpStatus: response.status,
+        timestamp: startedAt,
+        nowPlaying: [],
+        errorUpdateRaw: null,
+        outcome: 'pending'
+      };
+      setLocalRadioResult(nextResult);
+      appendLog(makeLog(response.ok ? 'online' : 'offline', `Local Internet Radio POST /select ${options.templateLabel}: HTTP ${response.status}`, boseIp));
+
+      let elapsedMs = 0;
+      for (const delayMs of LOCAL_RADIO_POLL_DELAYS) {
+        await waitFor(delayMs - elapsedMs);
+        elapsedMs = delayMs;
+        const poll = await pollLocalRadioNowPlaying(delayMs);
+        const nowPlaying = [...nextResult.nowPlaying, poll];
+        nextResult = {
+          ...nextResult,
+          nowPlaying,
+          errorUpdateRaw: lastRealtimeErrorRawRef.current,
+          outcome: getLocalRadioOutcome(nowPlaying, options.templateId, lastRealtimeErrorRawRef.current)
+        };
+        setLocalRadioResult(nextResult);
+      }
+
+      setLocalRadioHistory((prev) => [nextResult, ...prev].slice(0, 100));
+      appendLog(makeLog(nextResult.outcome === 'success' ? 'online' : 'offline', `Local Internet Radio verifica ${options.templateLabel}: ${nextResult.outcome}`, boseIp));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Errore sconosciuto Local Internet Radio test.';
+      const failedResult: LocalRadioTestResult = {
+        ...options,
+        requestXml,
+        responseBody: message,
+        httpStatus: null,
+        timestamp: startedAt,
+        nowPlaying: [],
+        errorUpdateRaw: lastRealtimeErrorRawRef.current,
+        outcome: 'error'
+      };
+      setLocalRadioResult(failedResult);
+      setLocalRadioHistory((prev) => [failedResult, ...prev].slice(0, 100));
+      appendLog(makeLog('offline', message, boseIp));
+    } finally {
+      setLocalRadioLoading(false);
+    }
+  }
+
+  async function runLocalRadioTemplateTest(template: LocalRadioTemplate, radio?: Radio) {
+    const streamUrl = getLocalRadioStreamUrl(radio);
+    const radioName = radio?.name ?? 'Custom Direct Stream';
+    const xml = buildLocalRadioSelectXml(template, streamUrl, radioName);
+    setLocalRadioXml(xml);
+    await runLocalRadioXmlTest({
+      templateId: template.id,
+      templateLabel: template.label,
+      radioName,
+      streamUrl,
+      xml
+    });
+  }
+
+  async function runManualLocalRadioXmlTest() {
+    const streamUrl = extractXmlAttribute(localRadioXml, 'location') ?? localRadioCustomStreamUrl.trim();
+    const radioName = extractXmlValue(localRadioXml, 'itemName') ?? 'Manual XML';
+    await runLocalRadioXmlTest({
+      templateId: 'Manual',
+      templateLabel: 'Manual XML',
+      radioName,
+      streamUrl,
+      xml: localRadioXml
+    });
+  }
+
+  function testStreamInBrowser(streamUrl: string) {
+    const nextStreamUrl = streamUrl.trim();
+    if (!nextStreamUrl) {
+      appendLog(makeLog('offline', 'Test stream browser annullato: URL stream mancante.'));
+      return;
+    }
+
+    setBrowserStreamUrl(nextStreamUrl);
+    window.setTimeout(() => {
+      void browserAudioRef.current?.play().catch((error) => {
+        appendLog(makeLog('offline', error instanceof Error ? error.message : 'Playback HTML5 non avviato.', boseIp));
+      });
+    }, 0);
+  }
+
+  function exportLocalRadioHistoryJson() {
+    downloadText(
+      `soundtouch-local-radio-history-${boseIp || 'device'}.json`,
+      JSON.stringify({ exportedAt: new Date().toISOString(), activeIp: boseIp, localRadioHistory }, null, 2),
+      'application/json'
+    );
+  }
+
+
   return (
     <div className="app-shell">
       <header className="hero">
@@ -1164,6 +1431,180 @@ export default function App() {
             {selectHistory.length === 0 ? <p className="hint">Nessuno storico disponibile.</p> : selectHistory.map((item, index) => (
               <details key={`${item.timestamp}-${index}`}>
                 <summary>{new Date(item.timestamp).toLocaleTimeString('it-IT')} · {item.presetLabel ?? 'XML manuale'} · {item.outcome}</summary>
+                <pre>{JSON.stringify(item, null, 2)}</pre>
+              </details>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="panel local-radio-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">V6 Local Internet Radio Tester</p>
+            <h2>Local Internet Radio Test</h2>
+          </div>
+          <span>URL stream diretti + POST /select</span>
+        </div>
+        <p className="hint">
+          Testa stream URL diretti senza risoluzione cloud TuneIn. Ogni template invia un ContentItem diverso e poi interroga /now_playing a 500ms, 1500ms, 3000ms e 5000ms.
+        </p>
+
+        <div className="local-radio-custom-row">
+          <label className="field-label" htmlFor="custom-stream-url">Stream URL custom</label>
+          <div className="ip-row">
+            <input
+              id="custom-stream-url"
+              value={localRadioCustomStreamUrl}
+              onChange={(event) => setLocalRadioCustomStreamUrl(event.target.value)}
+              placeholder="https://example.com/live/stream.mp3"
+            />
+            <button type="button" onClick={() => testStreamInBrowser(localRadioCustomStreamUrl)} disabled={!localRadioCustomStreamUrl.trim()}>
+              Test stream nel browser
+            </button>
+          </div>
+          <audio ref={browserAudioRef} controls src={browserStreamUrl} className="browser-audio" />
+          <div className="template-button-grid">
+            {LOCAL_RADIO_TEMPLATES.map((template) => (
+              <button
+                key={`custom-${template.id}`}
+                type="button"
+                onClick={() => void runLocalRadioTemplateTest(template)}
+                disabled={!canSend || localRadioLoading || !localRadioCustomStreamUrl.trim()}
+                title={`Test custom URL con ${template.label}`}
+              >
+                Test custom {template.id}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="local-radio-layout">
+          <section>
+            <div className="response-heading compact-heading">
+              <h3>Radio test</h3>
+              <button type="button" onClick={exportLocalRadioHistoryJson} disabled={localRadioHistory.length === 0}>
+                Export JSON storico test
+              </button>
+            </div>
+            <div className="local-radio-list">
+              {radios.length === 0 ? (
+                <p className="hint">Nessuna radio caricata da data/radios.json.</p>
+              ) : radios.map((radio) => {
+                const activeStreamUrl = getLocalRadioStreamUrl(radio);
+
+                return (
+                  <article key={`local-${radio.id}`}>
+                    <div>
+                      <h4>{radio.name}</h4>
+                      <p>{radio.genre}</p>
+                      <code>{activeStreamUrl}</code>
+                    </div>
+                    <div className="template-button-grid">
+                      {LOCAL_RADIO_TEMPLATES.map((template) => (
+                        <button
+                          key={`${radio.id}-${template.id}`}
+                          type="button"
+                          onClick={() => void runLocalRadioTemplateTest(template, radio)}
+                          disabled={!canSend || localRadioLoading || !activeStreamUrl}
+                          title={template.description}
+                        >
+                          Test {template.id}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="template-row">
+                      <button type="button" onClick={() => testStreamInBrowser(activeStreamUrl)} disabled={!activeStreamUrl}>
+                        Test stream nel browser
+                      </button>
+                      {LOCAL_RADIO_TEMPLATES.map((template) => (
+                        <button key={`${radio.id}-${template.id}-preview`} type="button" onClick={() => previewLocalRadioTemplate(template, radio)} disabled={!activeStreamUrl}>
+                          XML {template.id}
+                        </button>
+                      ))}
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          </section>
+
+          <section>
+            <h3>Varianti XML generate</h3>
+            <div className="local-template-list">
+              {LOCAL_RADIO_TEMPLATES.map((template) => (
+                <details key={template.id}>
+                  <summary>{template.label}</summary>
+                  <p>{template.description}</p>
+                  <pre>{formatXml(buildLocalRadioSelectXml(template, localRadioCustomStreamUrl || 'STREAM_URL', 'RADIO_NAME'))}</pre>
+                </details>
+              ))}
+            </div>
+            <h3>Editor manuale XML</h3>
+            <textarea
+              value={localRadioXml}
+              onChange={(event) => setLocalRadioXml(event.target.value)}
+              rows={10}
+              placeholder={formatXml(buildLocalRadioSelectXml(LOCAL_RADIO_TEMPLATES[0], localRadioCustomStreamUrl || 'STREAM_URL', 'RADIO_NAME'))}
+            />
+            <button type="button" onClick={() => void runManualLocalRadioXmlTest()} disabled={!canSend || localRadioLoading || !localRadioXml.trim()}>
+              {localRadioLoading ? 'Test Local Internet Radio in corso…' : 'POST /select XML manuale'}
+            </button>
+          </section>
+        </div>
+
+        <div className="local-radio-result">
+          <h3>Risultato Local Internet Radio</h3>
+          {localRadioResult ? (
+            <>
+              <div className="select-verification">
+                <h4>{localRadioResult.templateLabel}</h4>
+                <div className={`verification-badge ${localRadioResult.outcome}`}>
+                  {localRadioResult.outcome === 'success' ? 'Formato accettato' : `Esito: ${localRadioResult.outcome}`}
+                </div>
+                <div className="realtime-grid">
+                  <article><span>Radio</span><strong>{localRadioResult.radioName}</strong></article>
+                  <article><span>Template</span><strong>{localRadioResult.templateId}</strong></article>
+                  <article><span>Source now_playing</span><strong>{getLatestLocalRadioPoll(localRadioResult.nowPlaying)?.parsed.source ?? 'n/d'}</strong></article>
+                  <article><span>PlayStatus</span><strong>{getLatestLocalRadioPoll(localRadioResult.nowPlaying)?.parsed.playStatus ?? 'n/d'}</strong></article>
+                </div>
+                <p className="hint"><strong>Stream:</strong> {localRadioResult.streamUrl || 'n/d'}</p>
+                {localRadioResult.errorUpdateRaw ? (
+                  <details open>
+                    <summary>errorUpdate realtime</summary>
+                    <pre>{localRadioResult.errorUpdateRaw}</pre>
+                  </details>
+                ) : null}
+                <div className="experimental-grid">
+                  <section>
+                    <h4>XML inviato</h4>
+                    <pre>{formatXml(localRadioResult.requestXml)}</pre>
+                    <h4>Response Bose</h4>
+                    <pre>{localRadioResult.responseBody}</pre>
+                  </section>
+                  <section>
+                    <h4>Raw now_playing</h4>
+                    <div className="poll-grid">
+                      {localRadioResult.nowPlaying.map((poll) => (
+                        <details key={`${localRadioResult.timestamp}-${poll.delayMs}`} open={poll.delayMs === 5000}>
+                          <summary>{poll.delayMs}ms · HTTP {poll.httpStatus ?? 'errore'} · source {poll.parsed.source ?? 'n/d'}</summary>
+                          <pre>{formatXml(poll.nowPlayingXml)}</pre>
+                        </details>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </>
+          ) : (
+            <p className="hint">Nessun test Local Internet Radio eseguito.</p>
+          )}
+
+          <h3>Storico Local Internet Radio</h3>
+          <div className="select-history-list">
+            {localRadioHistory.length === 0 ? <p className="hint">Nessuno storico disponibile.</p> : localRadioHistory.map((item, index) => (
+              <details key={`${item.timestamp}-${index}`}>
+                <summary>{new Date(item.timestamp).toLocaleTimeString('it-IT')} · {item.templateId} · {item.radioName} · {item.outcome}</summary>
                 <pre>{JSON.stringify(item, null, 2)}</pre>
               </details>
             ))}
