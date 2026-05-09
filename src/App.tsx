@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 type BoseEndpoint = 'info' | 'now_playing' | 'sources' | 'volume';
 type BoseKey = 'PLAY_PAUSE' | 'STOP' | 'VOLUME_UP' | 'VOLUME_DOWN';
@@ -43,6 +43,27 @@ type DiscoverResponse = {
   scannedHosts?: number;
   durationMs?: number;
   error?: string;
+};
+
+type RealtimeSnapshot = {
+  source: string;
+  title: string;
+  artist: string;
+  playStatus: string;
+  volume: string;
+};
+
+type RealtimeEvent = {
+  timestamp: string;
+  eventName: string;
+  connectionState?: string;
+  message?: string;
+  source?: string | null;
+  title?: string | null;
+  artist?: string | null;
+  playStatus?: string | null;
+  volume?: string | null;
+  raw?: string;
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
@@ -144,6 +165,17 @@ export default function App() {
   ]);
   const [discovering, setDiscovering] = useState(false);
   const [lastScanSummary, setLastScanSummary] = useState('Nessuna scansione eseguita.');
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const [realtimeState, setRealtimeState] = useState('disconnesso');
+  const [realtimeSnapshot, setRealtimeSnapshot] = useState<RealtimeSnapshot>({
+    source: 'n/d',
+    title: 'n/d',
+    artist: 'n/d',
+    playStatus: 'n/d',
+    volume: 'n/d'
+  });
+  const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([]);
+  const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
 
@@ -152,6 +184,10 @@ export default function App() {
       .then((res) => res.json())
       .then(setRadios)
       .catch(() => setRadios([]));
+  }, []);
+
+  useEffect(() => () => {
+    realtimeSourceRef.current?.close();
   }, []);
 
   function appendLog(log: TechnicalLog) {
@@ -166,6 +202,9 @@ export default function App() {
     setBoseIp(ip);
     window.localStorage.setItem(LAST_IP_STORAGE_KEY, ip);
     appendLog(makeLog('online', `IP attivo impostato da ${source}: ${ip}`, ip));
+    if (realtimeSourceRef.current) {
+      disconnectRealtime();
+    }
   }
 
   async function runRequest(title: string, request: () => Promise<Response>, endpoint?: BoseEndpoint) {
@@ -264,14 +303,65 @@ export default function App() {
     );
   }
 
+
+  function applyRealtimeEvent(event: RealtimeEvent) {
+    setRealtimeEvents((prev) => [event, ...prev].slice(0, 120));
+
+    if (event.eventName === 'connectionState') {
+      setRealtimeState(event.connectionState ?? event.message ?? 'connectionState');
+      appendLog(makeLog(event.connectionState ?? 'realtime', event.message ?? 'Evento realtime connectionState.', boseIp));
+    }
+
+    setRealtimeSnapshot((prev) => ({
+      source: event.source || prev.source,
+      title: event.title || prev.title,
+      artist: event.artist || prev.artist,
+      playStatus: event.playStatus || prev.playStatus,
+      volume: event.volume || prev.volume
+    }));
+  }
+
+  function disconnectRealtime() {
+    realtimeSourceRef.current?.close();
+    realtimeSourceRef.current = null;
+    setRealtimeConnected(false);
+    setRealtimeState('disconnesso');
+    appendLog(makeLog('offline', 'Realtime disconnesso dal frontend.', boseIp));
+  }
+
+  function connectRealtime() {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Realtime non avviato: IP Bose mancante.'));
+      return;
+    }
+
+    realtimeSourceRef.current?.close();
+    setRealtimeConnected(true);
+    setRealtimeState('connessione...');
+    appendLog(makeLog('scanning', `Avvio realtime backend -> ws://${boseIp}:8080`, boseIp));
+
+    const source = new EventSource(`${API_BASE}/realtime/${encodedIp}`);
+    realtimeSourceRef.current = source;
+
+    source.addEventListener('soundtouch', (message) => {
+      const event = JSON.parse((message as MessageEvent).data) as RealtimeEvent;
+      applyRealtimeEvent(event);
+    });
+
+    source.onerror = () => {
+      setRealtimeState('reconnect automatico');
+      appendLog(makeLog('timeout', 'SSE realtime interrotto: il browser ritenterà automaticamente.', boseIp));
+    };
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">LAN testing dashboard · V2</p>
+          <p className="eyebrow">LAN testing dashboard · V3 realtime</p>
           <h1>SoundTouch Radio Bridge</h1>
           <p className="subtitle">
-            App locale Node.js + Express + React/Vite per trovare Bose SoundTouch 30 in LAN e provare le API SoundTouch.
+            App locale Node.js + Express + React/Vite per trovare Bose SoundTouch 30 in LAN, provare le API SoundTouch e ricevere eventi realtime.
           </p>
         </div>
         <div className={`status-card connection-${connectionStatus.replace(' ', '-')}`}>
@@ -301,6 +391,9 @@ export default function App() {
             </button>
             <button type="button" onClick={discoverDevices} disabled={discovering}>
               {discovering ? 'Scansione…' : 'Cerca dispositivi Bose'}
+            </button>
+            <button type="button" onClick={realtimeConnected ? disconnectRealtime : connectRealtime} disabled={!canSend}>
+              {realtimeConnected ? 'Disconnetti realtime' : 'Connetti realtime'}
             </button>
           </div>
           <p className="hint">Il backend rileva la subnet locale del server Node e scansiona gli IP .1-.254 su http://IP:8090/info.</p>
@@ -386,10 +479,38 @@ export default function App() {
         </section>
       </main>
 
+      <section className="panel realtime-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">Realtime V3</p>
+            <h2>Stato live SoundTouch</h2>
+          </div>
+          <span>{realtimeState}</span>
+        </div>
+        <div className="realtime-grid">
+          <article><span>Source attiva</span><strong>{realtimeSnapshot.source}</strong></article>
+          <article><span>Titolo</span><strong>{realtimeSnapshot.title}</strong></article>
+          <article><span>Artista</span><strong>{realtimeSnapshot.artist}</strong></article>
+          <article><span>Play/Pause</span><strong>{realtimeSnapshot.playStatus}</strong></article>
+          <article><span>Volume</span><strong>{realtimeSnapshot.volume}</strong></article>
+        </div>
+        <h3>Debug eventi raw</h3>
+        <div className="raw-events">
+          {realtimeEvents.length === 0 ? (
+            <p className="hint">Nessun evento realtime ricevuto. Premi “Connetti realtime”.</p>
+          ) : realtimeEvents.map((event, index) => (
+            <details key={`${event.timestamp}-${index}`} open={index === 0}>
+              <summary>{new Date(event.timestamp).toLocaleTimeString('it-IT')} · {event.eventName}</summary>
+              <pre>{event.raw ?? JSON.stringify(event, null, 2)}</pre>
+            </details>
+          ))}
+        </div>
+      </section>
+
       <section className="panel log-panel">
         <div className="response-heading">
           <div>
-            <p className="eyebrow">Diagnostica V2</p>
+            <p className="eyebrow">Diagnostica V3</p>
             <h2>Log tecnico</h2>
           </div>
           <span>{technicalLogs.length} eventi</span>
@@ -408,7 +529,7 @@ export default function App() {
 
       <section className="panel radios-panel">
         <div>
-          <p className="eyebrow">Preparazione V2</p>
+          <p className="eyebrow">Preparazione future radio</p>
           <h2>Radio web in JSON</h2>
           <p className="hint">
             Questa lista è solo dati locali per una futura integrazione di preset o streaming verso SoundTouch.

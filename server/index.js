@@ -1,4 +1,5 @@
 import express from 'express';
+import WebSocket from 'ws';
 import { readFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
@@ -135,6 +136,34 @@ function parseBoseInfoXml(xml) {
     deviceID: deviceID || 'n/d',
     productType: productType || null
   };
+}
+
+
+function parseSoundTouchRealtimeXml(xml) {
+  const knownEvents = ['nowPlayingUpdated', 'volumeUpdated', 'presetsUpdated', 'infoUpdated', 'connectionState'];
+  const eventName = knownEvents.find((name) => new RegExp(`<${name}\\b`, 'i').test(xml))
+    ?? xml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1]
+    ?? 'raw';
+  const nowPlayingXml = xml.match(/<nowPlayingUpdated\b[\s\S]*?<\/nowPlayingUpdated>/i)?.[0]
+    ?? xml.match(/<nowPlaying\b[\s\S]*?<\/nowPlaying>/i)?.[0]
+    ?? xml;
+
+  return {
+    eventName,
+    source: extractXmlAttribute(nowPlayingXml, 'source') ?? extractXmlValue(nowPlayingXml, 'source'),
+    title: extractXmlValue(nowPlayingXml, 'track')
+      ?? extractXmlValue(nowPlayingXml, 'itemName')
+      ?? extractXmlValue(nowPlayingXml, 'stationName'),
+    artist: extractXmlValue(nowPlayingXml, 'artist'),
+    playStatus: extractXmlValue(nowPlayingXml, 'playStatus') ?? extractXmlValue(nowPlayingXml, 'state'),
+    volume: extractXmlValue(xml, 'actualvolume') ?? extractXmlValue(xml, 'volume'),
+    deviceID: extractXmlAttribute(xml, 'deviceID') ?? extractXmlValue(xml, 'deviceID')
+  };
+}
+
+function writeSse(res, event, payload) {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
 async function probeSoundTouchInfo(ip, timeoutMs = 800) {
@@ -344,6 +373,96 @@ app.get('/api/discover', async (_req, res, next) => {
   } catch (error) {
     return next(error);
   }
+});
+
+
+app.get('/api/realtime/:ip', (req, res) => {
+  const targetIp = sanitizeIp(req.params.ip);
+  if (!targetIp) {
+    return res.status(400).json({ error: 'Indirizzo IP Bose mancante o non valido.' });
+  }
+
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  res.flushHeaders?.();
+
+  let closed = false;
+  let boseSocket = null;
+  let reconnectTimer = null;
+  const boseWsUrl = `ws://${targetIp}:8080`;
+
+  const connect = () => {
+    if (closed) {
+      return;
+    }
+
+    writeSse(res, 'soundtouch', {
+      timestamp: timestamp(),
+      eventName: 'connectionState',
+      connectionState: 'connecting',
+      message: `Connessione backend -> Bose ${boseWsUrl}`
+    });
+
+    boseSocket = new WebSocket(boseWsUrl);
+
+    boseSocket.on('open', () => {
+      writeSse(res, 'soundtouch', {
+        timestamp: timestamp(),
+        eventName: 'connectionState',
+        connectionState: 'connected',
+        message: `WebSocket Bose connesso a ${boseWsUrl}`
+      });
+    });
+
+    boseSocket.on('message', (data) => {
+      const raw = data.toString();
+      const parsed = parseSoundTouchRealtimeXml(raw);
+      writeSse(res, 'soundtouch', {
+        timestamp: timestamp(),
+        ...parsed,
+        raw
+      });
+    });
+
+    boseSocket.on('error', (error) => {
+      writeSse(res, 'soundtouch', {
+        timestamp: timestamp(),
+        eventName: 'connectionState',
+        connectionState: 'error',
+        message: error.message
+      });
+    });
+
+    boseSocket.on('close', (code, reason) => {
+      writeSse(res, 'soundtouch', {
+        timestamp: timestamp(),
+        eventName: 'connectionState',
+        connectionState: 'disconnected',
+        code,
+        message: reason?.toString() || 'WebSocket Bose chiuso. Reconnect automatico in 1500ms.'
+      });
+
+      if (!closed) {
+        reconnectTimer = setTimeout(connect, 1500);
+      }
+    });
+  };
+
+  req.on('close', () => {
+    closed = true;
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+    }
+    if (boseSocket) {
+      boseSocket.close();
+    }
+  });
+
+  connect();
 });
 
 app.get('/api/radios', async (_req, res, next) => {
