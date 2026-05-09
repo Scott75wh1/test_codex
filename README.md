@@ -2,7 +2,7 @@
 
 Dashboard locale **Node.js + Express + React/Vite** per testare le API Bose SoundTouch sulla LAN.
 
-La V3 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che rileva la subnet LAN del server Node, cerca dispositivi Bose SoundTouch, inoltra le richieste HTTP/XML al dispositivo su `http://IP:8090` e apre un bridge realtime verso `ws://BOSE_IP:8080`.
+La V3 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che rileva la subnet LAN del server Node, cerca dispositivi Bose SoundTouch, inoltra le richieste HTTP/XML al dispositivo su `http://IP:8090` e apre un bridge realtime verso `ws://BOSE_IP:8080` usando il subprotocol WebSocket `gabbo`.
 
 ## Funzioni V3
 
@@ -12,11 +12,12 @@ La V3 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
 - Stato connessione in dashboard: `online`, `offline`, `timeout`, `non Bose` o `scanning`.
 - Pannello log tecnico con timestamp, IP, stato e durata.
 - Click su un device trovato per impostarlo come IP attivo.
-- Pulsante **Connetti realtime**: il frontend apre una connessione SSE al backend, mentre il backend apre un WebSocket verso `ws://BOSE_IP:8080`.
-- Reconnect automatico lato backend verso Bose se il WebSocket cade; il browser ritenta automaticamente la connessione SSE.
-- Monitor realtime di `nowPlayingUpdated`, `volumeUpdated`, `presetsUpdated`, `infoUpdated`, `connectionState` e di qualunque XML/evento raw ricevuto.
+- Pulsante **Connetti realtime**: il frontend apre una connessione SSE al backend, mentre il backend apre un WebSocket verso `ws://BOSE_IP:8080` con subprotocol `gabbo`.
+- Ping/keepalive e reconnect automatico lato backend verso Bose se il WebSocket cade; il browser ritenta automaticamente la connessione SSE.
+- Parser XML generico per `nowPlayingUpdated`, `volumeUpdated`, `presetsUpdated`, `infoUpdated`, `connectionStateUpdated` e di qualunque XML/evento raw ricevuto.
 - UI realtime per source attiva, titolo, artista, stato play/pause e volume.
-- Pannello debug eventi raw per vedere gli XML originali Bose anche se i nomi evento differiscono.
+- Pannello debug eventi raw per vedere tutti gli XML originali Bose anche se i nomi evento differiscono. Se arriva solo `SoundTouchSdkInfo`, lo stato mostra che la WebSocket è aperta e in attesa di notifiche.
+- Pulsante **Forza refresh REST** per sincronizzare manualmente `GET /now_playing`, `GET /volume` e `GET /sources`. Dopo ogni comando inviato dall’app viene eseguito automaticamente un polling REST di `now_playing` e `volume` dopo 300ms.
 - Test `GET http://IP:8090/info`.
 - Proxy locale per:
   - `GET /info`
@@ -98,7 +99,7 @@ Bridge realtime via Server-Sent Events verso il browser e WebSocket verso Bose:
 curl -N http://localhost:3001/api/realtime/192.168.1.50
 ```
 
-Il backend si collega a `ws://192.168.1.50:8080`, inoltra gli eventi raw al frontend e prova a riconnettersi automaticamente se la connessione cade.
+Il backend si collega a `ws://192.168.1.50:8080` con subprotocol `gabbo`, inoltra gli eventi raw al frontend, invia ping/keepalive e prova a riconnettersi automaticamente se la connessione cade. Se la Bose invia solo `<SoundTouchSdkInfo ... />`, la dashboard lo mostra come WebSocket aperta in attesa di notifiche.
 
 Sostituisci `192.168.1.50` con l'IP del tuo Bose.
 

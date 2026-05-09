@@ -149,6 +149,29 @@ function statusFromInfoResponse(response: Response, body: string): ConnectionSta
   return 'offline';
 }
 
+
+function extractXmlValue(xml: string, tagName: string) {
+  const match = xml.match(new RegExp(`<${tagName}[^>]*>([^<]*)</${tagName}>`, 'i'));
+  return match?.[1]?.trim() || null;
+}
+
+function extractXmlAttribute(xml: string, attributeName: string) {
+  const match = xml.match(new RegExp(`${attributeName}="([^"]+)"`, 'i'));
+  return match?.[1]?.trim() || null;
+}
+
+function parseRestSnapshot(nowPlayingXml: string, volumeXml: string) {
+  return {
+    source: extractXmlAttribute(nowPlayingXml, 'source') ?? extractXmlValue(nowPlayingXml, 'source'),
+    title: extractXmlValue(nowPlayingXml, 'track')
+      ?? extractXmlValue(nowPlayingXml, 'itemName')
+      ?? extractXmlValue(nowPlayingXml, 'stationName'),
+    artist: extractXmlValue(nowPlayingXml, 'artist'),
+    playStatus: extractXmlValue(nowPlayingXml, 'playStatus') ?? extractXmlValue(nowPlayingXml, 'state'),
+    volume: extractXmlValue(volumeXml, 'actualvolume') ?? extractXmlValue(volumeXml, 'volume')
+  };
+}
+
 function getStoredIp() {
   return window.localStorage.getItem(LAST_IP_STORAGE_KEY) ?? '192.168.1.50';
 }
@@ -283,33 +306,91 @@ export default function App() {
     void runRequest(`GET /${endpoint}`, () => fetch(`${API_BASE}/bose/${encodedIp}/${endpoint}`), endpoint);
   }
 
+  async function forceRefreshRest(reason = 'manuale', includeSources = true) {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Force refresh REST annullato: IP Bose mancante.'));
+      return;
+    }
+
+    appendLog(makeLog('scanning', `Force refresh REST (${reason}) verso ${boseIp}`, boseIp));
+
+    try {
+      const [nowPlayingResponse, volumeResponse, sourcesResponse] = await Promise.all([
+        fetch(`${API_BASE}/bose/${encodedIp}/now_playing`),
+        fetch(`${API_BASE}/bose/${encodedIp}/volume`),
+        includeSources ? fetch(`${API_BASE}/bose/${encodedIp}/sources`) : Promise.resolve(null)
+      ]);
+      const [nowPlayingXml, volumeXml, sourcesXml] = await Promise.all([
+        nowPlayingResponse.text(),
+        volumeResponse.text(),
+        sourcesResponse ? sourcesResponse.text() : Promise.resolve('')
+      ]);
+      const restSnapshot = parseRestSnapshot(nowPlayingXml, volumeXml);
+
+      setRealtimeSnapshot((prev) => ({
+        source: restSnapshot.source || prev.source,
+        title: restSnapshot.title || prev.title,
+        artist: restSnapshot.artist || prev.artist,
+        playStatus: restSnapshot.playStatus || prev.playStatus,
+        volume: restSnapshot.volume || prev.volume
+      }));
+      setResponse({
+        title: includeSources ? 'Force refresh REST — now_playing / volume / sources' : 'Sync REST — now_playing / volume',
+        status: nowPlayingResponse.ok && volumeResponse.ok && (sourcesResponse?.ok ?? true) ? 'success' : 'error',
+        timestamp: now(),
+        body: [
+          'GET /now_playing',
+          nowPlayingXml,
+          '',
+          'GET /volume',
+          volumeXml,
+          ...(includeSources ? ['', 'GET /sources', sourcesXml] : [])
+        ].join('\n')
+      });
+      appendLog(makeLog('online', `Force refresh REST completato (${reason}).`, boseIp));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Errore sconosciuto durante force refresh REST.';
+      appendLog(makeLog('offline', message, boseIp));
+    }
+  }
+
   function postVolume() {
-    void runRequest('POST /volume XML', () =>
-      fetch(`${API_BASE}/bose/${encodedIp}/volume`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ volume })
-      })
-    );
+    void (async () => {
+      await runRequest('POST /volume XML', () =>
+        fetch(`${API_BASE}/bose/${encodedIp}/volume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ volume })
+        })
+      );
+      window.setTimeout(() => {
+        void forceRefreshRest('sync dopo comando volume app', false);
+      }, 300);
+    })();
   }
 
   function postKey(key: BoseKey) {
-    void runRequest(`POST /key ${key}`, () =>
-      fetch(`${API_BASE}/bose/${encodedIp}/key`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ key })
-      })
-    );
+    void (async () => {
+      await runRequest(`POST /key ${key}`, () =>
+        fetch(`${API_BASE}/bose/${encodedIp}/key`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ key })
+        })
+      );
+      window.setTimeout(() => {
+        void forceRefreshRest(`sync dopo comando ${key} app`, false);
+      }, 300);
+    })();
   }
 
 
   function applyRealtimeEvent(event: RealtimeEvent) {
     setRealtimeEvents((prev) => [event, ...prev].slice(0, 120));
 
-    if (event.eventName === 'connectionState') {
-      setRealtimeState(event.connectionState ?? event.message ?? 'connectionState');
-      appendLog(makeLog(event.connectionState ?? 'realtime', event.message ?? 'Evento realtime connectionState.', boseIp));
+    if (event.connectionState || event.eventName === 'connectionStateUpdated') {
+      setRealtimeState(event.connectionState ?? event.message ?? 'connectionStateUpdated');
+      appendLog(makeLog(event.connectionState ?? 'realtime', event.message ?? 'Evento realtime connectionStateUpdated.', boseIp));
     }
 
     setRealtimeSnapshot((prev) => ({
@@ -394,6 +475,9 @@ export default function App() {
             </button>
             <button type="button" onClick={realtimeConnected ? disconnectRealtime : connectRealtime} disabled={!canSend}>
               {realtimeConnected ? 'Disconnetti realtime' : 'Connetti realtime'}
+            </button>
+            <button type="button" onClick={() => void forceRefreshRest()} disabled={!canSend}>
+              Forza refresh REST
             </button>
           </div>
           <p className="hint">Il backend rileva la subnet locale del server Node e scansiona gli IP .1-.254 su http://IP:8090/info.</p>

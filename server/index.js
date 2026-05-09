@@ -140,15 +140,13 @@ function parseBoseInfoXml(xml) {
 
 
 function parseSoundTouchRealtimeXml(xml) {
-  const knownEvents = ['nowPlayingUpdated', 'volumeUpdated', 'presetsUpdated', 'infoUpdated', 'connectionState'];
-  const eventName = knownEvents.find((name) => new RegExp(`<${name}\\b`, 'i').test(xml))
-    ?? xml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1]
-    ?? 'raw';
+  const rootTag = xml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1] ?? 'raw';
+  const knownEvents = ['nowPlayingUpdated', 'volumeUpdated', 'presetsUpdated', 'infoUpdated', 'connectionStateUpdated'];
+  const eventName = knownEvents.find((name) => new RegExp(`<${name}\\b`, 'i').test(xml)) ?? rootTag;
   const nowPlayingXml = xml.match(/<nowPlayingUpdated\b[\s\S]*?<\/nowPlayingUpdated>/i)?.[0]
     ?? xml.match(/<nowPlaying\b[\s\S]*?<\/nowPlaying>/i)?.[0]
     ?? xml;
-
-  return {
+  const parsed = {
     eventName,
     source: extractXmlAttribute(nowPlayingXml, 'source') ?? extractXmlValue(nowPlayingXml, 'source'),
     title: extractXmlValue(nowPlayingXml, 'track')
@@ -159,6 +157,17 @@ function parseSoundTouchRealtimeXml(xml) {
     volume: extractXmlValue(xml, 'actualvolume') ?? extractXmlValue(xml, 'volume'),
     deviceID: extractXmlAttribute(xml, 'deviceID') ?? extractXmlValue(xml, 'deviceID')
   };
+
+  if (/^SoundTouchSdkInfo$/i.test(rootTag)) {
+    return {
+      ...parsed,
+      eventName: 'SoundTouchSdkInfo',
+      connectionState: 'waiting',
+      message: 'WebSocket aperta, in attesa di notifiche'
+    };
+  }
+
+  return parsed;
 }
 
 function writeSse(res, event, payload) {
@@ -402,20 +411,27 @@ app.get('/api/realtime/:ip', (req, res) => {
 
     writeSse(res, 'soundtouch', {
       timestamp: timestamp(),
-      eventName: 'connectionState',
+      eventName: 'connectionStateUpdated',
       connectionState: 'connecting',
       message: `Connessione backend -> Bose ${boseWsUrl}`
     });
 
-    boseSocket = new WebSocket(boseWsUrl);
+    boseSocket = new WebSocket(boseWsUrl, 'gabbo');
+    let keepAliveTimer = null;
 
     boseSocket.on('open', () => {
       writeSse(res, 'soundtouch', {
         timestamp: timestamp(),
-        eventName: 'connectionState',
+        eventName: 'connectionStateUpdated',
         connectionState: 'connected',
-        message: `WebSocket Bose connesso a ${boseWsUrl}`
+        message: `WebSocket Bose connesso a ${boseWsUrl} con subprotocol gabbo`
       });
+
+      keepAliveTimer = setInterval(() => {
+        if (boseSocket?.readyState === WebSocket.OPEN) {
+          boseSocket.ping();
+        }
+      }, 25000);
     });
 
     boseSocket.on('message', (data) => {
@@ -431,16 +447,19 @@ app.get('/api/realtime/:ip', (req, res) => {
     boseSocket.on('error', (error) => {
       writeSse(res, 'soundtouch', {
         timestamp: timestamp(),
-        eventName: 'connectionState',
+        eventName: 'connectionStateUpdated',
         connectionState: 'error',
         message: error.message
       });
     });
 
     boseSocket.on('close', (code, reason) => {
+      if (keepAliveTimer) {
+        clearInterval(keepAliveTimer);
+      }
       writeSse(res, 'soundtouch', {
         timestamp: timestamp(),
-        eventName: 'connectionState',
+        eventName: 'connectionStateUpdated',
         connectionState: 'disconnected',
         code,
         message: reason?.toString() || 'WebSocket Bose chiuso. Reconnect automatico in 1500ms.'
