@@ -32,6 +32,7 @@ app.use((req, res, next) => {
 
   return next();
 });
+app.use(express.text({ type: ['application/xml', 'text/xml'] }));
 app.use(express.json());
 
 function loadLocalEnv() {
@@ -539,6 +540,28 @@ app.get('/api/bose/:ip/volume', async (req, res, next) => {
     sendXml(res, await fetchSoundTouch(req.params.ip, '/volume'));
   } catch (error) {
     next(error);
+  }
+});
+
+app.post('/api/bose/:ip/select', async (req, res, next) => {
+  try {
+    const requestXml = typeof req.body === 'string' ? req.body.trim() : '';
+    if (!requestXml || !/^<ContentItem\b[\s\S]*<\/ContentItem>$/.test(requestXml)) {
+      return res.status(400).json({ error: 'Il body deve essere XML ContentItem puro.' });
+    }
+
+    const result = await postXmlToSoundTouch(req.params.ip, '/select', requestXml);
+
+    return res.status(result.status).json({
+      requestXml,
+      boseResponse: result
+    });
+  } catch (error) {
+    if (error.requestXml) {
+      return sendBridgePostError(res, error);
+    }
+
+    return next(error);
   }
 });
 

@@ -85,6 +85,14 @@ type ParsedPreset = {
   itemName: string | null;
   art: string | null;
   stationName: string | null;
+  contentItemXml: string | null;
+};
+
+type SelectResult = {
+  requestXml: string;
+  responseBody: string;
+  httpStatus: number | null;
+  timestamp: string;
 };
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
@@ -97,6 +105,11 @@ const ENDPOINTS: Array<{ id: BoseEndpoint; label: string; method: string }> = [
 ];
 const KEYS: BoseKey[] = ['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN'];
 const INSPECTOR_TABS: InspectorTab[] = ['Info', 'Sources', 'Presets', 'Now Playing', 'Raw XML', 'WebSocket Events'];
+const SELECT_TEMPLATES = {
+  tuneIn: '<ContentItem source="TUNEIN" type="stationurl" location="/v1/playback/station/s293430" sourceAccount="" isPresetable="true">\n  <itemName>Just House Music</itemName>\n</ContentItem>',
+  localInternetRadio: '<ContentItem source="LOCAL_INTERNET_RADIO" type="stationurl" location="http://example.com/stream.mp3" sourceAccount="" isPresetable="true">\n  <itemName>Manual Web Radio</itemName>\n</ContentItem>',
+  upnp: '<ContentItem source="UPNP" type="object.item.audioItem.musicTrack" location="0$0$TRACK_ID" sourceAccount="" isPresetable="true">\n  <itemName>UPNP manual item</itemName>\n</ContentItem>'
+};
 
 function now() {
   return new Date().toLocaleTimeString('it-IT');
@@ -224,17 +237,21 @@ function findXmlBlocks(xml: string, tagName: string) {
 
 function parsePresetXml(presetXml: string): ParsedPreset {
   const openTag = presetXml.match(/<preset\b[^>]*>/i)?.[0] ?? '';
+  const contentItemXml = presetXml.match(/<ContentItem\b[\s\S]*?<\/ContentItem>/i)?.[0] ?? null;
   const attrs = parseXmlAttributes(openTag);
+  const contentAttrs = parseXmlAttributes(contentItemXml?.match(/<ContentItem\b[^>]*>/i)?.[0] ?? '');
+  const dataXml = contentItemXml ?? presetXml;
 
   return {
     id: attrs.id ?? extractXmlValue(presetXml, 'id'),
-    source: extractXmlAttribute(presetXml, 'source') ?? extractXmlValue(presetXml, 'source'),
-    sourceAccount: extractXmlAttribute(presetXml, 'sourceAccount') ?? extractXmlValue(presetXml, 'sourceAccount'),
-    location: extractXmlValue(presetXml, 'location'),
-    container: extractXmlValue(presetXml, 'container'),
-    itemName: extractXmlValue(presetXml, 'itemName'),
-    art: extractXmlValue(presetXml, 'art'),
-    stationName: extractXmlValue(presetXml, 'stationName')
+    source: contentAttrs.source ?? extractXmlAttribute(dataXml, 'source') ?? extractXmlValue(dataXml, 'source'),
+    sourceAccount: contentAttrs.sourceAccount ?? extractXmlAttribute(dataXml, 'sourceAccount') ?? extractXmlValue(dataXml, 'sourceAccount'),
+    location: contentAttrs.location ?? extractXmlValue(dataXml, 'location'),
+    container: extractXmlValue(dataXml, 'container'),
+    itemName: extractXmlValue(dataXml, 'itemName'),
+    art: extractXmlValue(dataXml, 'art'),
+    stationName: extractXmlValue(dataXml, 'stationName'),
+    contentItemXml
   };
 }
 
@@ -319,6 +336,9 @@ export default function App() {
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('Info');
   const [inspectorRecords, setInspectorRecords] = useState<Partial<Record<InspectorTab, InspectorRecord>>>({});
   const [inspectorLoading, setInspectorLoading] = useState(false);
+  const [selectXml, setSelectXml] = useState(SELECT_TEMPLATES.tuneIn);
+  const [selectResult, setSelectResult] = useState<SelectResult | null>(null);
+  const [selectLoading, setSelectLoading] = useState(false);
   const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
@@ -615,14 +635,75 @@ export default function App() {
     downloadText(`soundtouch-raw-${boseIp || 'device'}.xml`, text || '<!-- Nessun XML inspector caricato -->', 'application/xml');
   }
 
+
+  async function refreshNowPlayingAfterSelect() {
+    try {
+      const res = await fetch(`${API_BASE}/bose/${encodedIp}/now_playing`);
+      const nowPlayingXml = await res.text();
+      const restSnapshot = parseRestSnapshot(nowPlayingXml, '');
+      setRealtimeSnapshot((prev) => ({
+        source: restSnapshot.source || prev.source,
+        title: restSnapshot.title || prev.title,
+        artist: restSnapshot.artist || prev.artist,
+        playStatus: restSnapshot.playStatus || prev.playStatus,
+        volume: prev.volume
+      }));
+      appendLog(makeLog(res.ok ? 'online' : 'offline', `Refresh /now_playing dopo select: HTTP ${res.status}`, boseIp));
+    } catch (error) {
+      appendLog(makeLog('offline', error instanceof Error ? error.message : 'Refresh /now_playing dopo select fallito.', boseIp));
+    }
+  }
+
+  async function trySelectXml(xml: string) {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Select annullato: IP Bose mancante.'));
+      return;
+    }
+
+    const requestXml = xml.trim();
+    if (!requestXml) {
+      appendLog(makeLog('offline', 'Select annullato: XML ContentItem vuoto.'));
+      return;
+    }
+
+    setSelectLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/bose/${encodedIp}/select`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/xml',
+          Accept: 'application/xml'
+        },
+        body: requestXml
+      });
+      const responseBody = await readResponseBody(res);
+      setSelectResult({
+        requestXml,
+        responseBody,
+        httpStatus: res.status,
+        timestamp: new Date().toISOString()
+      });
+      appendLog(makeLog(res.ok ? 'online' : 'offline', `POST /select HTTP ${res.status}`, boseIp));
+      window.setTimeout(() => {
+        void refreshNowPlayingAfterSelect();
+      }, 500);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Errore sconosciuto POST /select.';
+      setSelectResult({ requestXml, responseBody: message, httpStatus: null, timestamp: new Date().toISOString() });
+      appendLog(makeLog('offline', message, boseIp));
+    } finally {
+      setSelectLoading(false);
+    }
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">LAN testing dashboard · V4 inspector</p>
+          <p className="eyebrow">LAN testing dashboard · V5 select tester</p>
           <h1>SoundTouch Radio Bridge</h1>
           <p className="subtitle">
-            App locale Node.js + Express + React/Vite per trovare Bose SoundTouch 30 in LAN, provare le API SoundTouch e ricevere eventi realtime e ispezionare preset/radio legacy.
+            App locale Node.js + Express + React/Vite per trovare Bose SoundTouch 30 in LAN, provare le API SoundTouch e ricevere eventi realtime, ispezionare preset e testare POST /select.
           </p>
         </div>
         <div className={`status-card connection-${connectionStatus.replace(' ', '-')}`}>
@@ -846,10 +927,85 @@ export default function App() {
         )}
       </section>
 
+      <section className="panel experimental-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">V5 Experimental Select Tester</p>
+            <h2>Experimental Select</h2>
+          </div>
+          <span>POST /select ContentItem XML</span>
+        </div>
+        <p className="hint">
+          Usa i preset letti da /presets o modifica manualmente un ContentItem per verificare TuneIn legacy, LOCAL_INTERNET_RADIO e UPNP.
+        </p>
+        <div className="experimental-grid">
+          <section>
+            <div className="response-heading compact-heading">
+              <h3>Preset da /presets</h3>
+              <button type="button" onClick={() => void loadInspectorTab('Presets')} disabled={!canSend || inspectorLoading}>
+                Ricarica presets
+              </button>
+            </div>
+            <div className="select-preset-list">
+              {((inspectorRecords.Presets?.parsedJson as { presets?: ParsedPreset[] } | undefined)?.presets ?? []).length === 0 ? (
+                <p className="hint">Carica la tab Presets nell’Inspector o premi “Ricarica presets”.</p>
+              ) : ((inspectorRecords.Presets?.parsedJson as { presets?: ParsedPreset[] }).presets ?? []).map((preset, index) => (
+                <article key={`select-${preset.id ?? index}-${preset.location ?? 'preset'}`}>
+                  <strong>{preset.itemName ?? preset.stationName ?? `Preset ${preset.id ?? index + 1}`}</strong>
+                  <small>source: {preset.source ?? 'n/d'} · location: {preset.location ?? 'n/d'}</small>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const xml = preset.contentItemXml ?? '';
+                      setSelectXml(xml);
+                      void trySelectXml(xml);
+                    }}
+                    disabled={!preset.contentItemXml || selectLoading}
+                  >
+                    Try Select
+                  </button>
+                </article>
+              ))}
+            </div>
+          </section>
+          <section>
+            <h3>Editor XML manuale</h3>
+            <div className="template-row">
+              <button type="button" onClick={() => setSelectXml(SELECT_TEMPLATES.tuneIn)}>A) TUNEIN stationurl legacy</button>
+              <button type="button" onClick={() => setSelectXml(SELECT_TEMPLATES.localInternetRadio)}>B) LOCAL_INTERNET_RADIO stationurl</button>
+              <button type="button" onClick={() => setSelectXml(SELECT_TEMPLATES.upnp)}>C) UPNP item manuale</button>
+            </div>
+            <textarea value={selectXml} onChange={(event) => setSelectXml(event.target.value)} rows={8} />
+            <button type="button" onClick={() => void trySelectXml(selectXml)} disabled={!canSend || selectLoading}>
+              {selectLoading ? 'Select in corso…' : 'Try Select XML manuale'}
+            </button>
+          </section>
+        </div>
+        <div className="select-result">
+          <h3>Risultato POST /select</h3>
+          {selectResult ? (
+            <div className="experimental-grid">
+              <section>
+                <p>HTTP status: <strong>{selectResult.httpStatus ?? 'errore rete'}</strong></p>
+                <p>Timestamp: {new Date(selectResult.timestamp).toLocaleTimeString('it-IT')}</p>
+                <h4>XML inviato</h4>
+                <pre>{formatXml(selectResult.requestXml)}</pre>
+              </section>
+              <section>
+                <h4>Risposta Bose</h4>
+                <pre>{selectResult.responseBody}</pre>
+              </section>
+            </div>
+          ) : (
+            <p className="hint">Nessun test /select eseguito.</p>
+          )}
+        </div>
+      </section>
+
       <section className="panel log-panel">
         <div className="response-heading">
           <div>
-            <p className="eyebrow">Diagnostica V4</p>
+            <p className="eyebrow">Diagnostica V5</p>
             <h2>Log tecnico</h2>
           </div>
           <span>{technicalLogs.length} eventi</span>

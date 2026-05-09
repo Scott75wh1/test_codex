@@ -2,9 +2,9 @@
 
 Dashboard locale **Node.js + Express + React/Vite** per testare le API Bose SoundTouch sulla LAN.
 
-La V4 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che rileva la subnet LAN del server Node, cerca dispositivi Bose SoundTouch, inoltra le richieste HTTP/XML al dispositivo su `http://IP:8090` e apre un bridge realtime verso `ws://BOSE_IP:8080` usando il subprotocol WebSocket `gabbo`.
+La V5 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che rileva la subnet LAN del server Node, cerca dispositivi Bose SoundTouch, inoltra le richieste HTTP/XML al dispositivo su `http://IP:8090` e apre un bridge realtime verso `ws://BOSE_IP:8080` usando il subprotocol WebSocket `gabbo`.
 
-## Funzioni V4
+## Funzioni V5
 
 - Campo per l'indirizzo IP del Bose SoundTouch con salvataggio dell'ultimo IP funzionante in `localStorage`.
 - Pulsante **Cerca dispositivi Bose** che chiama `GET /api/discover`.
@@ -22,6 +22,9 @@ La V4 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
 - Ogni risposta inspector salva raw XML, parsed JSON e timestamp; i preset mostrano id, source, sourceAccount, location, container, itemName, art e stationName con fallback se mancano campi.
 - Export **JSON diagnostics** e **raw XML** per analizzare come Bose referenzia internamente radio web e preset legacy.
 - Storico degli ultimi 50 eventi WebSocket nel tab inspector dedicato.
+- Nuovo pannello **Experimental Select** per testare `POST /select` con il ContentItem XML esatto dei preset.
+- Lista preset da `/presets` con pulsante **Try Select**, editor XML manuale e template TUNEIN legacy, LOCAL_INTERNET_RADIO e UPNP.
+- Ogni test mostra XML inviato, risposta Bose e HTTP status; dopo 500ms viene eseguito refresh REST di `/now_playing`.
 - Test `GET http://IP:8090/info`.
 - Proxy locale per:
   - `GET /info`
@@ -29,6 +32,7 @@ La V4 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
   - `GET /sources`
   - `GET /presets`
   - `GET /volume`
+  - `POST /select` con ContentItem XML sperimentale
   - `POST /volume` con payload XML `<volume>...</volume>`
   - `POST /key` per `PLAY_PAUSE`, `STOP`, `VOLUME_UP`, `VOLUME_DOWN`
 - Lista di radio web in `data/radios.json`, esposta da `GET /api/radios`, pronta come base dati per preset/streaming futuri.
@@ -106,13 +110,22 @@ curl -N http://localhost:3001/api/realtime/192.168.1.50
 
 Il backend si collega a `ws://192.168.1.50:8080` con subprotocol `gabbo`, inoltra gli eventi raw al frontend, invia ping/keepalive e prova a riconnettersi automaticamente se la connessione cade. Se la Bose invia solo `<SoundTouchSdkInfo ... />`, la dashboard lo mostra come WebSocket aperta in attesa di notifiche.
 
-Endpoint inspector/rest principali:
+Endpoint inspector/rest principali e select sperimentale:
 
 ```bash
 curl http://localhost:3001/api/bose/192.168.1.50/info
 curl http://localhost:3001/api/bose/192.168.1.50/sources
 curl http://localhost:3001/api/bose/192.168.1.50/presets
 curl http://localhost:3001/api/bose/192.168.1.50/now-playing
+```
+
+Esempio `POST /select` con ContentItem TuneIn legacy:
+
+```bash
+curl -X POST http://localhost:3001/api/bose/192.168.1.50/select \
+  -H 'Content-Type: application/xml' \
+  -H 'Accept: application/xml' \
+  -d '<ContentItem source="TUNEIN" type="stationurl" location="/v1/playback/station/s293430" sourceAccount="" isPresetable="true"><itemName>Just House Music</itemName></ContentItem>'
 ```
 
 Sostituisci `192.168.1.50` con l'IP del tuo Bose.
