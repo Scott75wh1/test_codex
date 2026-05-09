@@ -32,12 +32,26 @@ type ReplacementPreset = {
 
 type StreamCheckResult = {
   ok: boolean;
+  potentiallyPlayable?: boolean;
   status?: number;
   mimeType?: string | null;
   contentLength?: string | null;
   finalUrl?: string;
   durationMs?: number;
   error?: string;
+};
+
+type RadioSearchResult = {
+  name: string;
+  streamUrl: string;
+  favicon: string;
+  homepage: string;
+  country: string;
+  language: string;
+  tags: string;
+  codec: string;
+  bitrate: number;
+  lastcheckok: boolean;
 };
 
 type UpnpSoapResult = {
@@ -616,10 +630,17 @@ export default function App() {
   const [replacementLoading, setReplacementLoading] = useState(false);
   const [replacementSavingId, setReplacementSavingId] = useState<number | null>(null);
   const [replacementStreamChecks, setReplacementStreamChecks] = useState<Record<number, StreamCheckResult>>({});
-  const [replacementAudioUrl, setReplacementAudioUrl] = useState('');
   const [radioPresetPlayingId, setRadioPresetPlayingId] = useState<number | null>(null);
   const [radioPresetNowPlaying, setRadioPresetNowPlaying] = useState<ReplacementPreset | null>(null);
   const [radioPresetLastResult, setRadioPresetLastResult] = useState<RadioPresetPlayResult | null>(null);
+  const [radioSearchQuery, setRadioSearchQuery] = useState('');
+  const [radioSearchCountry, setRadioSearchCountry] = useState('');
+  const [radioSearchTag, setRadioSearchTag] = useState('');
+  const [radioSearchLoading, setRadioSearchLoading] = useState(false);
+  const [radioSearchError, setRadioSearchError] = useState('');
+  const [radioSearchResults, setRadioSearchResults] = useState<RadioSearchResult[]>([]);
+  const [selectedStationForPreset, setSelectedStationForPreset] = useState<RadioSearchResult | null>(null);
+  const [manualPresetDraft, setManualPresetDraft] = useState({ name: '', streamUrl: '', logoUrl: '', category: '', notes: '' });
   const [selectedUpnpPresetId, setSelectedUpnpPresetId] = useState(2);
   const [upnpStreamUrl, setUpnpStreamUrl] = useState(UPNP_TEST_STREAMS[0]);
   const [upnpSetUriMode, setUpnpSetUriMode] = useState<UpnpSetUriMode>('direct');
@@ -665,7 +686,6 @@ export default function App() {
   const lastRealtimeErrorRawRef = useRef<string | null>(null);
   const realtimeEventsRef = useRef<RealtimeEvent[]>([]);
   const browserAudioRef = useRef<HTMLAudioElement | null>(null);
-  const replacementAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
@@ -1583,43 +1603,110 @@ export default function App() {
     }
   }
 
-  async function checkReplacementStream(preset: ReplacementPreset) {
-    if (!preset.streamUrl.trim()) {
-      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: 'streamUrl mancante.' } }));
+  async function assignPresetFromStation(presetId: number, station: RadioSearchResult) {
+    const nextPreset: ReplacementPreset = {
+      id: presetId,
+      name: station.name || `Preset ${presetId}`,
+      streamUrl: station.streamUrl,
+      logoUrl: station.favicon,
+      category: station.tags.split(',').map((item) => item.trim()).filter(Boolean)[0] || station.country || 'Radio Browser',
+      notes: [station.codec, station.bitrate ? `${station.bitrate} kbps` : '', station.language, station.homepage].filter(Boolean).join(' · '),
+      enabled: true,
+      lastPlayedAt: replacementPresets.find((preset) => preset.id === presetId)?.lastPlayedAt ?? ''
+    };
+    await saveReplacementPreset(nextPreset);
+    setSelectedStationForPreset(null);
+    await checkPresetStreamById(presetId);
+  }
+
+  async function saveManualPreset(presetId: number) {
+    const nextPreset: ReplacementPreset = {
+      id: presetId,
+      name: manualPresetDraft.name.trim() || `Preset ${presetId}`,
+      streamUrl: manualPresetDraft.streamUrl.trim(),
+      logoUrl: manualPresetDraft.logoUrl.trim(),
+      category: manualPresetDraft.category.trim() || 'Manuale',
+      notes: manualPresetDraft.notes.trim(),
+      enabled: true,
+      lastPlayedAt: replacementPresets.find((preset) => preset.id === presetId)?.lastPlayedAt ?? ''
+    };
+    await saveReplacementPreset(nextPreset);
+    await checkPresetStreamById(presetId);
+  }
+
+  async function searchRadios() {
+    setRadioSearchLoading(true);
+    setRadioSearchError('');
+    try {
+      const params = new URLSearchParams();
+      if (radioSearchQuery.trim()) params.set('q', radioSearchQuery.trim());
+      if (radioSearchCountry.trim()) params.set('country', radioSearchCountry.trim());
+      if (radioSearchTag.trim()) params.set('tag', radioSearchTag.trim());
+      const response = await fetch(`${API_BASE}/radio-search?${params.toString()}`);
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? 'Ricerca Radio Browser fallita.');
+      }
+      setRadioSearchResults(payload.stations as RadioSearchResult[]);
+      appendLog(makeLog('online', `Radio Browser: ${(payload.stations as RadioSearchResult[]).length} risultati.`));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Ricerca Radio Browser fallita.';
+      setRadioSearchError(message);
+      appendLog(makeLog('offline', message));
+    } finally {
+      setRadioSearchLoading(false);
+    }
+  }
+
+  async function testArbitraryStream(streamUrl: string, key: number) {
+    if (!streamUrl.trim()) {
+      setReplacementStreamChecks((prev) => ({ ...prev, [key]: { ok: false, potentiallyPlayable: false, error: 'streamUrl mancante.' } }));
       return;
     }
 
-    setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: 'verifica in corso…' } }));
+    setReplacementStreamChecks((prev) => ({ ...prev, [key]: { ok: false, potentiallyPlayable: false, error: 'verifica in corso…' } }));
     try {
       const response = await fetch(`${API_BASE}/stream-check`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ streamUrl: preset.streamUrl })
+        body: JSON.stringify({ streamUrl })
       });
       const result = (await response.json()) as StreamCheckResult;
-      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: result }));
-      appendLog(makeLog(result.ok ? 'online' : 'offline', `Stream replacement preset ${preset.id}: ${result.ok ? 'raggiungibile' : result.error ?? `HTTP ${result.status ?? 'n/d'}`}`));
+      setReplacementStreamChecks((prev) => ({ ...prev, [key]: result }));
+      appendLog(makeLog(result.ok ? 'online' : 'offline', `Test stream: ${result.ok ? 'raggiungibile' : result.error ?? `HTTP ${result.status ?? 'n/d'}`}`));
     } catch (error) {
-      const result = { ok: false, error: error instanceof Error ? error.message : 'Verifica stream fallita.' };
-      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: result }));
+      const result = { ok: false, potentiallyPlayable: false, error: error instanceof Error ? error.message : 'Verifica stream fallita.' };
+      setReplacementStreamChecks((prev) => ({ ...prev, [key]: result }));
       appendLog(makeLog('offline', result.error));
     }
   }
 
-  function testReplacementStreamInBrowser(preset: ReplacementPreset) {
-    const streamUrl = preset.streamUrl.trim();
-    if (!streamUrl) {
-      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: 'streamUrl mancante.' } }));
+  async function checkPresetStreamById(id: number) {
+    setReplacementStreamChecks((prev) => ({ ...prev, [id]: { ok: false, potentiallyPlayable: false, error: 'verifica in corso…' } }));
+    try {
+      const response = await fetch(`${API_BASE}/replacement-presets/${id}/test-stream`, { method: 'POST' });
+      const result = (await response.json()) as StreamCheckResult;
+      setReplacementStreamChecks((prev) => ({ ...prev, [id]: result }));
+      appendLog(makeLog(result.ok ? 'online' : 'offline', `Preset ${id} stream: ${result.ok ? 'raggiungibile' : result.error ?? `HTTP ${result.status ?? 'n/d'}`}`));
+    } catch (error) {
+      const result = { ok: false, potentiallyPlayable: false, error: error instanceof Error ? error.message : 'Verifica stream fallita.' };
+      setReplacementStreamChecks((prev) => ({ ...prev, [id]: result }));
+      appendLog(makeLog('offline', result.error));
+    }
+  }
+
+  async function checkReplacementStream(preset: ReplacementPreset) {
+    if (!preset.streamUrl.trim()) {
+      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, potentiallyPlayable: false, error: 'streamUrl mancante.' } }));
       return;
     }
 
-    setReplacementAudioUrl(streamUrl);
+    await checkPresetStreamById(preset.id);
+  }
+
+
+  function testReplacementStreamInBrowser(preset: ReplacementPreset) {
     void checkReplacementStream(preset);
-    window.setTimeout(() => {
-      void replacementAudioRef.current?.play().catch((error) => {
-        setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: error instanceof Error ? error.message : 'Playback browser non avviato.' } }));
-      });
-    }, 0);
   }
 
   function getSelectedUpnpPreset() {
@@ -1699,61 +1786,41 @@ export default function App() {
     return postUpnpActionFor(endpoint);
   }
 
-  function validateRadioPresetStream(preset: ReplacementPreset) {
-    if (!preset.streamUrl.trim()) {
-      throw new Error('Stream URL obbligatorio.');
-    }
-
-    if (!/^https?:\/\//i.test(preset.streamUrl.trim())) {
-      throw new Error('Stream URL deve iniziare con http:// o https://.');
-    }
-  }
-
   async function playRadioPreset(preset: ReplacementPreset) {
     if (!canSend) {
       appendLog(makeLog('offline', 'Play preset annullato: IP Bose mancante.'));
       return;
     }
 
-    try {
-      validateRadioPresetStream(preset);
-    } catch (error) {
-      appendLog(makeLog('offline', error instanceof Error ? error.message : 'Preset non valido.'));
+    if (!preset.streamUrl.trim()) {
+      const message = `Preset ${preset.id}: streamUrl mancante.`;
+      setRadioPresetLastResult({ timestamp: new Date().toISOString(), preset, nowPlayingAfter: [], outcome: message });
+      appendLog(makeLog('offline', message, boseIp));
       return;
     }
 
     setRadioPresetPlayingId(preset.id);
     lastRealtimeErrorRawRef.current = null;
-    const startedAt = new Date().toISOString();
 
     try {
-      const stopResult = await postUpnpActionFor('stop');
-      const setUriResult = await postUpnpActionFor('set-uri', { streamUrl: preset.streamUrl, mode: 'didl', title: preset.name });
-      await waitFor(300);
-      const playResult = await postUpnpActionFor('play');
-      const getTransportInfoResult = await postUpnpActionFor('get-transport-info');
-      const getPositionInfoResult = await postUpnpActionFor('get-position-info');
-      const nowPlayingAfter = await pollUpnpNowPlayingAfterPlay(UPNP_VERIFY_POLL_DELAYS);
-      const nextPreset = { ...preset, lastPlayedAt: new Date().toISOString() };
-      await saveReplacementPreset(nextPreset);
-      setRadioPresetNowPlaying(nextPreset);
-      const log: RadioPresetPlayResult = {
-        timestamp: startedAt,
-        preset: nextPreset,
-        stopResult,
-        setUriResult,
-        playResult,
-        getTransportInfoResult,
-        getPositionInfoResult,
-        nowPlayingAfter,
-        errorUpdateRaw: lastRealtimeErrorRawRef.current,
-        outcome: `Play inviato alla Bose · transport ${/CurrentTransportState[^>]*>([^<]+)/i.exec(getTransportInfoResult.responseBody)?.[1] ?? 'n/d'}`
-      };
-      setRadioPresetLastResult(log);
-      appendLog(makeLog(playResult.ok ? 'online' : 'offline', `Radio preset ${preset.id}: ${log.outcome}`, boseIp));
+      const response = await fetch(`${API_BASE}/replacement-presets/${preset.id}/play`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ boseIp })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? `Play preset ${preset.id} fallito.`);
+      }
+
+      const result = payload as RadioPresetPlayResult;
+      setRadioPresetLastResult(result);
+      setRadioPresetNowPlaying(result.preset);
+      updateReplacementPreset(result.preset.id, result.preset);
+      appendLog(makeLog(result.playResult?.ok ? 'online' : 'offline', `Radio preset ${preset.id}: ${result.outcome}`, boseIp));
     } catch (error) {
       const log: RadioPresetPlayResult = {
-        timestamp: startedAt,
+        timestamp: new Date().toISOString(),
         preset,
         nowPlayingAfter: [],
         errorUpdateRaw: lastRealtimeErrorRawRef.current,
@@ -1765,6 +1832,7 @@ export default function App() {
       setRadioPresetPlayingId(null);
     }
   }
+
 
   async function stopRadioPresetPlayback() {
     if (!canSend) {
@@ -1961,90 +2029,207 @@ export default function App() {
       </header>
 
       <main className="dashboard-grid">
-        <section className="panel radio-presets-player-panel">
-          <div className="response-heading">
+        <section className="panel radio-presets-player-panel v11-hero-panel">
+          <div className="v11-hero">
             <div>
-              <p className="eyebrow">V10 Radio Presets Player MVP</p>
-              <h2>Radio Presets</h2>
+              <p className="eyebrow">V11 Final MVP</p>
+              <h1>SoundTouch Radio Bridge</h1>
+              <p className="hint">Cerca radio online, salvale in uno dei 6 preset locali e fai riprodurre la Bose direttamente via UPnP AVTransport sulla porta 8091.</p>
             </div>
-            <span>telecomando UPnP diretto · audio dalla Bose</span>
-          </div>
-          <p className="hint">
-            Clicca un preset: il browser invia Stop → SetAVTransportURI → Play alla Bose via UPnP AVTransport. Non viene usato audio HTML5: il browser è solo telecomando.
-          </p>
-
-          <div className="radio-player-toolbar">
-            <div className="now-playing-pill">
-              <span>Now playing</span>
-              <strong>{radioPresetNowPlaying?.name ?? realtimeSnapshot.title ?? 'n/d'}</strong>
-              <small>source {realtimeSnapshot.source} · play {realtimeSnapshot.playStatus} · realtime {realtimeState}</small>
-            </div>
-            <div className="radio-volume-control">
-              <label className="field-label" htmlFor="radio-volume">Volume Bose: {volume}</label>
-              <input id="radio-volume" type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(Number(event.target.value))} />
-              <button type="button" onClick={postVolume} disabled={!canSend}>Applica volume</button>
-            </div>
-            <button type="button" className="stop-button" onClick={() => void stopRadioPresetPlayback()} disabled={!canSend || radioPresetPlayingId !== null}>
-              Stop globale
-            </button>
-          </div>
-
-          <div className="radio-preset-card-grid">
-            {replacementPresets.map((preset) => {
-              const streamCheck = replacementStreamChecks[preset.id];
-              const isPlaying = radioPresetPlayingId === preset.id;
-              const isCurrent = radioPresetNowPlaying?.id === preset.id;
-
-              return (
-                <article key={`radio-player-${preset.id}`} className={`${!preset.enabled ? 'disabled' : ''} ${isCurrent ? 'current' : ''}`}>
-                  <div className="physical-preset-number">{preset.id}</div>
-                  {preset.logoUrl ? <img src={preset.logoUrl} alt="" /> : <div className="preset-logo-placeholder">♪</div>}
-                  <div>
-                    <h3>{preset.name}</h3>
-                    <p>{preset.category || 'Radio'}</p>
-                    <code>{preset.streamUrl || 'stream URL mancante'}</code>
-                  </div>
-                  <button type="button" onClick={() => void playRadioPreset(preset)} disabled={!canSend || !preset.enabled || isPlaying || !preset.streamUrl.trim()}>
-                    {isPlaying ? 'Avvio…' : 'Play'}
-                  </button>
-                  <button type="button" onClick={() => void checkReplacementStream(preset)} disabled={!preset.streamUrl.trim()}>
-                    Test stream URL
-                  </button>
-                  <div className={`stream-status ${streamCheck?.ok ? 'ok' : streamCheck ? 'error' : 'idle'}`}>
-                    <span>{streamCheck ? (streamCheck.ok ? 'stream raggiungibile' : 'errore stream') : 'stream non testato'}</span>
-                    <small>{streamCheck?.mimeType ? `${streamCheck.mimeType}` : streamCheck?.error ?? (streamCheck?.status ? `HTTP ${streamCheck.status}` : 'content-type n/d')}</small>
-                    {streamCheck?.finalUrl ? <small>final URL: {streamCheck.finalUrl}</small> : null}
-                  </div>
-                  {preset.lastPlayedAt ? <small>Ultimo play: {new Date(preset.lastPlayedAt).toLocaleString('it-IT')}</small> : null}
-                </article>
-              );
-            })}
-          </div>
-
-          <details className="advanced-logs">
-            <summary>Advanced logs</summary>
-            {radioPresetLastResult ? (
-              <div className="poll-grid">
-                <details open>
-                  <summary>SOAP request/response</summary>
-                  <pre>{JSON.stringify({ stop: radioPresetLastResult.stopResult, setUri: radioPresetLastResult.setUriResult, play: radioPresetLastResult.playResult }, null, 2)}</pre>
-                </details>
-                <details open>
-                  <summary>GetTransportInfo</summary>
-                  <pre>{JSON.stringify(radioPresetLastResult.getTransportInfoResult ?? {}, null, 2)}</pre>
-                </details>
-                <details>
-                  <summary>GetPositionInfo</summary>
-                  <pre>{JSON.stringify(radioPresetLastResult.getPositionInfoResult ?? {}, null, 2)}</pre>
-                </details>
-                <details open>
-                  <summary>/now_playing polling</summary>
-                  <pre>{JSON.stringify(radioPresetLastResult.nowPlayingAfter, null, 2)}</pre>
-                </details>
-                {radioPresetLastResult.errorUpdateRaw ? <pre>{radioPresetLastResult.errorUpdateRaw}</pre> : null}
+            <div className="bose-status-card">
+              <span className={`status-dot ${connectionStatus === 'online' || realtimeConnected ? 'online' : connectionStatus === 'scanning' ? 'loading' : 'offline'}`} />
+              <div>
+                <strong>{connectionStatus === 'online' || realtimeConnected ? 'Bose online' : connectionStatus}</strong>
+                <small>{boseIp || 'IP non impostato'} · realtime {realtimeState}</small>
               </div>
-            ) : <p className="hint">Nessun log player disponibile.</p>}
-          </details>
+            </div>
+          </div>
+
+          <div className="v11-layout">
+            <section className="v11-presets-column">
+              <div className="section-title-row">
+                <div>
+                  <h2>Preset radio locali</h2>
+                  <p className="hint">Tutti i preset, default e utente, partono dallo stesso JSON e dallo stesso endpoint backend: preset id → streamUrl → Stop/SetURI/Play.</p>
+                </div>
+                <button type="button" onClick={() => void loadReplacementPresets()} disabled={replacementLoading}>
+                  {replacementLoading ? 'Aggiorno…' : 'Ricarica'}
+                </button>
+              </div>
+
+              <div className="radio-player-toolbar v11-toolbar">
+                <div className="now-playing-pill">
+                  <span>Now playing</span>
+                  <strong>{radioPresetNowPlaying?.name ?? realtimeSnapshot.title ?? 'n/d'}</strong>
+                  <small>source {realtimeSnapshot.source} · play {realtimeSnapshot.playStatus} · realtime {realtimeState}</small>
+                </div>
+                <div className="radio-volume-control">
+                  <label className="field-label" htmlFor="radio-volume">Volume Bose: {volume}</label>
+                  <input id="radio-volume" type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(Number(event.target.value))} />
+                  <button type="button" onClick={postVolume} disabled={!canSend}>Applica volume</button>
+                </div>
+                <button type="button" className="stop-button touch-button" onClick={() => void stopRadioPresetPlayback()} disabled={!canSend || radioPresetPlayingId !== null}>
+                  Stop globale
+                </button>
+              </div>
+
+              <div className="radio-preset-card-grid v11-preset-grid">
+                {replacementPresets.map((preset) => {
+                  const streamCheck = replacementStreamChecks[preset.id];
+                  const isPlaying = radioPresetPlayingId === preset.id;
+                  const isCurrent = radioPresetNowPlaying?.id === preset.id;
+
+                  return (
+                    <article key={`radio-player-${preset.id}`} className={`${!preset.enabled ? 'disabled' : ''} ${isCurrent ? 'current' : ''} ${isPlaying ? 'loading' : ''}`}>
+                      <div className="physical-preset-number">{preset.id}</div>
+                      {preset.logoUrl ? <img src={preset.logoUrl} alt="" /> : <div className="preset-logo-placeholder">♪</div>}
+                      <div>
+                        <h3>{preset.name}</h3>
+                        <p>{preset.category || 'Radio'}</p>
+                        <code>{preset.streamUrl || 'stream URL mancante'}</code>
+                      </div>
+                      <div className="preset-card-actions">
+                        <button type="button" className="touch-button primary-action" onClick={() => void playRadioPreset(preset)} disabled={!canSend || !preset.enabled || isPlaying || !preset.streamUrl.trim()}>
+                          {isPlaying ? 'Avvio…' : 'Play'}
+                        </button>
+                        <button type="button" className="touch-button" onClick={() => void checkReplacementStream(preset)} disabled={!preset.streamUrl.trim()}>
+                          Test
+                        </button>
+                        <button type="button" className="touch-button" onClick={() => setSelectedStationForPreset({ name: preset.name, streamUrl: preset.streamUrl, favicon: preset.logoUrl ?? '', homepage: '', country: '', language: '', tags: preset.category ?? '', codec: '', bitrate: 0, lastcheckok: true })}>
+                          Modifica
+                        </button>
+                      </div>
+                      <div className={`stream-status ${streamCheck?.potentiallyPlayable ? 'ok' : streamCheck ? 'error' : 'idle'}`}>
+                        <span>{streamCheck ? (streamCheck.potentiallyPlayable ? 'stream potenzialmente valido' : streamCheck.ok ? 'raggiungibile: verifica MIME' : 'errore stream') : 'stream non testato'}</span>
+                        <small>{streamCheck?.mimeType ? `${streamCheck.mimeType}` : streamCheck?.error ?? (streamCheck?.status ? `HTTP ${streamCheck.status}` : 'content-type n/d')}</small>
+                        {streamCheck?.finalUrl ? <small>final URL: {streamCheck.finalUrl}</small> : null}
+                      </div>
+                      {preset.lastPlayedAt ? <small>Ultimo play: {new Date(preset.lastPlayedAt).toLocaleString('it-IT')}</small> : null}
+                    </article>
+                  );
+                })}
+              </div>
+
+              <details className="advanced-logs">
+                <summary>Advanced Logs · ultimo play UPnP</summary>
+                {radioPresetLastResult ? (
+                  <div className="poll-grid">
+                    <details open>
+                      <summary>SOAP Stop / SetAVTransportURI / Play</summary>
+                      <pre>{JSON.stringify({ stop: radioPresetLastResult.stopResult, setUri: radioPresetLastResult.setUriResult, play: radioPresetLastResult.playResult }, null, 2)}</pre>
+                    </details>
+                    <details open>
+                      <summary>GetTransportInfo</summary>
+                      <pre>{JSON.stringify(radioPresetLastResult.getTransportInfoResult ?? {}, null, 2)}</pre>
+                    </details>
+                    <details open>
+                      <summary>GetPositionInfo</summary>
+                      <pre>{JSON.stringify(radioPresetLastResult.getPositionInfoResult ?? {}, null, 2)}</pre>
+                    </details>
+                    <details open>
+                      <summary>/now_playing polling</summary>
+                      <pre>{JSON.stringify(radioPresetLastResult.nowPlayingAfter, null, 2)}</pre>
+                    </details>
+                    {radioPresetLastResult.errorUpdateRaw ? <pre>{radioPresetLastResult.errorUpdateRaw}</pre> : null}
+                  </div>
+                ) : <p className="hint">Nessun log player disponibile. Se manca streamUrl, l’errore comparirà qui e nei log tecnici.</p>}
+              </details>
+            </section>
+
+            <aside className="v11-search-column">
+              <section className="radio-search-panel">
+                <div className="section-title-row">
+                  <div>
+                    <h2>Cerca radio</h2>
+                    <p className="hint">Radio Browser serve solo per trovare stream radio; il salvataggio resta locale.</p>
+                  </div>
+                </div>
+                <form className="radio-search-form" onSubmit={(event) => { event.preventDefault(); void searchRadios(); }}>
+                  <input className="big-search-input" value={radioSearchQuery} onChange={(event) => setRadioSearchQuery(event.target.value)} placeholder="BBC, jazz, paradise…" />
+                  <div className="search-filter-row">
+                    <input value={radioSearchCountry} onChange={(event) => setRadioSearchCountry(event.target.value)} placeholder="Paese opzionale" />
+                    <input value={radioSearchTag} onChange={(event) => setRadioSearchTag(event.target.value)} placeholder="Tag opzionale" />
+                  </div>
+                  <button type="submit" className="touch-button primary-action" disabled={radioSearchLoading}>{radioSearchLoading ? 'Cerco…' : 'Cerca radio online'}</button>
+                  {radioSearchError ? <p className="error-text">{radioSearchError}</p> : null}
+                </form>
+
+                <div className="manual-preset-form">
+                  <h3>Inserimento manuale streamUrl</h3>
+                  <input value={manualPresetDraft.name} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="Nome radio" />
+                  <input value={manualPresetDraft.streamUrl} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, streamUrl: event.target.value }))} placeholder="http:// o https:// stream diretto" />
+                  <div className="search-filter-row">
+                    <input value={manualPresetDraft.logoUrl} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, logoUrl: event.target.value }))} placeholder="Logo URL opzionale" />
+                    <input value={manualPresetDraft.category} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, category: event.target.value }))} placeholder="Categoria" />
+                  </div>
+                  <textarea value={manualPresetDraft.notes} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, notes: event.target.value }))} placeholder="Note" rows={2} />
+                  <div className="preset-picker-inline">
+                    {replacementPresets.map((preset) => (
+                      <button key={`manual-${preset.id}`} type="button" onClick={() => void saveManualPreset(preset.id)} disabled={replacementSavingId === preset.id || !manualPresetDraft.streamUrl.trim()}>
+                        Salva su {preset.id}
+                      </button>
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => void testArbitraryStream(manualPresetDraft.streamUrl, 1000)} disabled={!manualPresetDraft.streamUrl.trim()}>Test manuale</button>
+                  {replacementStreamChecks[1000] ? (
+                    <div className={`stream-status ${replacementStreamChecks[1000].potentiallyPlayable ? 'ok' : 'error'}`}>
+                      <span>{replacementStreamChecks[1000].potentiallyPlayable ? 'stream potenzialmente valido' : 'verifica non conclusiva'}</span>
+                      <small>{replacementStreamChecks[1000].mimeType ?? replacementStreamChecks[1000].error ?? `HTTP ${replacementStreamChecks[1000].status ?? 'n/d'}`}</small>
+                      {replacementStreamChecks[1000].finalUrl ? <small>final URL: {replacementStreamChecks[1000].finalUrl}</small> : null}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="radio-results-list">
+                  {radioSearchResults.map((station, index) => (
+                    <article key={`${station.streamUrl}-${index}`} className="radio-result-card">
+                      {station.favicon ? <img src={station.favicon} alt="" /> : <div className="preset-logo-placeholder">♫</div>}
+                      <div>
+                        <h3>{station.name}</h3>
+                        <p>{[station.country, station.language, station.codec, station.bitrate ? `${station.bitrate} kbps` : ''].filter(Boolean).join(' · ')}</p>
+                        <code>{station.streamUrl}</code>
+                        <small>{station.tags}</small>
+                      </div>
+                      <div className="result-actions">
+                        <button type="button" onClick={() => void testArbitraryStream(station.streamUrl, -index - 1)}>Test</button>
+                        <button type="button" className="primary-action" onClick={() => setSelectedStationForPreset(station)}>Assegna a preset</button>
+                      </div>
+                      {replacementStreamChecks[-index - 1] ? (
+                        <div className={`stream-status ${replacementStreamChecks[-index - 1].potentiallyPlayable ? 'ok' : 'error'}`}>
+                          <span>{replacementStreamChecks[-index - 1].potentiallyPlayable ? 'stream potenzialmente valido' : 'verifica non conclusiva'}</span>
+                          <small>{replacementStreamChecks[-index - 1].mimeType ?? replacementStreamChecks[-index - 1].error ?? `HTTP ${replacementStreamChecks[-index - 1].status ?? 'n/d'}`}</small>
+                          {replacementStreamChecks[-index - 1].finalUrl ? <small>final URL: {replacementStreamChecks[-index - 1].finalUrl}</small> : null}
+                        </div>
+                      ) : null}
+                    </article>
+                  ))}
+                </div>
+              </section>
+            </aside>
+          </div>
+
+          {selectedStationForPreset ? (
+            <div className="modal-backdrop" role="presentation" onClick={() => setSelectedStationForPreset(null)}>
+              <section className="preset-modal" role="dialog" aria-modal="true" aria-label="Assegna radio a preset" onClick={(event) => event.stopPropagation()}>
+                <div className="section-title-row">
+                  <div>
+                    <h2>Assegna a preset</h2>
+                    <p className="hint">{selectedStationForPreset.name}</p>
+                  </div>
+                  <button type="button" onClick={() => setSelectedStationForPreset(null)}>Chiudi</button>
+                </div>
+                <code>{selectedStationForPreset.streamUrl || 'stream URL mancante'}</code>
+                <div className="preset-picker-grid">
+                  {replacementPresets.map((preset) => (
+                    <button key={`assign-${preset.id}`} type="button" onClick={() => void assignPresetFromStation(preset.id, selectedStationForPreset)} disabled={!selectedStationForPreset.streamUrl || replacementSavingId === preset.id}>
+                      <strong>{preset.id}</strong>
+                      <span>{preset.name}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>
+          ) : null}
         </section>
 
         <section className="panel advanced-diagnostics-heading">
@@ -2409,7 +2594,7 @@ export default function App() {
               placeholder="https://example.com/live/stream.mp3"
             />
             <button type="button" onClick={() => testStreamInBrowser(localRadioCustomStreamUrl)} disabled={!localRadioCustomStreamUrl.trim()}>
-              Test stream nel browser
+              Test stream URL
             </button>
           </div>
           <audio ref={browserAudioRef} controls src={browserStreamUrl} className="browser-audio" />
@@ -2464,7 +2649,7 @@ export default function App() {
                     </div>
                     <div className="template-row">
                       <button type="button" onClick={() => testStreamInBrowser(activeStreamUrl)} disabled={!activeStreamUrl}>
-                        Test stream nel browser
+                        Test stream URL
                       </button>
                       {LOCAL_RADIO_TEMPLATES.map((template) => (
                         <button key={`${radio.id}-${template.id}-preview`} type="button" onClick={() => previewLocalRadioTemplate(template, radio)} disabled={!activeStreamUrl}>
@@ -2570,11 +2755,10 @@ export default function App() {
           <span>preset radio gestiti dall’app</span>
         </div>
         <p className="hint">
-          I preset Bose legacy rimangono diagnostici: questa sezione usa un JSON locale e un player browser per diventare il nuovo pannello preset radio. Non promette ancora playback diretto sulla cassa Bose.
+          Editor avanzato dei 6 preset locali: il playback diretto Bose resta gestito dal player V11 tramite UPnP AVTransport.
         </p>
 
         <div className="replacement-audio-row">
-          <audio ref={replacementAudioRef} controls src={replacementAudioUrl} className="browser-audio" />
           <button type="button" onClick={() => void loadReplacementPresets()} disabled={replacementLoading}>
             {replacementLoading ? 'Ricarico preset…' : 'Ricarica JSON locale'}
           </button>
@@ -2637,7 +2821,7 @@ export default function App() {
                     {replacementSavingId === preset.id ? 'Salvataggio…' : 'Salva'}
                   </button>
                   <button type="button" onClick={() => testReplacementStreamInBrowser(preset)} disabled={!preset.streamUrl.trim()}>
-                    Test stream nel browser
+                    Test stream URL
                   </button>
                 </div>
                 <div className={`stream-status ${streamCheck?.ok ? 'ok' : streamCheck ? 'error' : 'idle'}`}>
@@ -2652,23 +2836,23 @@ export default function App() {
         </div>
 
         <div className="bose-output-strategy">
-          <h3>Bose Output Strategy</h3>
+          <h3>Strategia V11</h3>
           <div className="strategy-grid">
             <article>
-              <strong>AirPlay fallback</strong>
-              <p>Usare il browser/dispositivo come sorgente e inviare l’audio alla SoundTouch via AirPlay quando disponibile.</p>
+              <strong>Preset locali</strong>
+              <p>I sei slot sono salvati in data/replacement-presets.json e non distinguono tra default e preset creati dall’utente.</p>
             </article>
             <article>
-              <strong>Bluetooth fallback</strong>
-              <p>Riprodurre lo stream nel player HTML5 e uscire verso Bose tramite pairing Bluetooth.</p>
+              <strong>Play backend per ID</strong>
+              <p>Il frontend invia l’ID preset; il backend legge streamUrl dal JSON e usa sempre Stop, SetAVTransportURI, Play e polling.</p>
             </article>
             <article>
-              <strong>UPnP/DLNA research</strong>
-              <p>Continuare la ricerca su eventuale selezione locale UPnP/DLNA senza dipendere dal catalogo TuneIn cloud.</p>
+              <strong>Radio Browser</strong>
+              <p>La ricerca online serve solo per trovare URL radio da assegnare ai preset locali.</p>
             </article>
             <article>
-              <strong>Future local bridge</strong>
-              <p>Possibile bridge locale futuro per servire stream compatibili alla rete, senza promettere oggi playback diretto Bose.</p>
+              <strong>Audio dalla Bose</strong>
+              <p>La riproduzione diretta passa da UPnP AVTransport sulla porta 8091, senza browser player, AirPlay o Bluetooth.</p>
             </article>
           </div>
         </div>

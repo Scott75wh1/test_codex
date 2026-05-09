@@ -461,6 +461,157 @@ async function postUpnpSoap(ip, soapAction, requestSoap) {
   }
 }
 
+
+function isPotentialAudioContentType(contentType) {
+  const normalized = String(contentType ?? '').split(';')[0].trim().toLowerCase();
+  return [
+    'audio/mpeg',
+    'audio/aac',
+    'audio/x-aac',
+    'audio/aacp',
+    'audio/x-mpegurl',
+    'application/x-mpegurl',
+    'application/vnd.apple.mpegurl',
+    'application/octet-stream'
+  ].includes(normalized) || normalized.startsWith('audio/');
+}
+
+async function checkStreamReachability(streamUrl) {
+  const parsedUrl = validateStreamUrl(String(streamUrl ?? '').trim());
+  if (!parsedUrl) {
+    const error = new Error('streamUrl mancante.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    let response = await fetch(parsedUrl, { method: 'HEAD', signal: controller.signal });
+    if (response.status === 405 || response.status === 403) {
+      response = await fetch(parsedUrl, { method: 'GET', signal: controller.signal, headers: { Range: 'bytes=0-0' } });
+    }
+
+    const mimeType = response.headers.get('content-type') ?? null;
+    return {
+      ok: response.ok,
+      potentiallyPlayable: response.ok && isPotentialAudioContentType(mimeType),
+      status: response.status,
+      mimeType,
+      contentLength: response.headers.get('content-length') ?? null,
+      finalUrl: response.url,
+      durationMs: Date.now() - startedAt
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      potentiallyPlayable: false,
+      error: error.name === 'AbortError' ? `Timeout dopo ${REQUEST_TIMEOUT_MS} ms.` : error.message,
+      durationMs: Date.now() - startedAt
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchNowPlayingSnapshot(ip, delayMs) {
+  const result = await fetchSoundTouchExperimental(ip, '/now_playing');
+  return {
+    delayMs,
+    timestamp: timestamp(),
+    httpStatus: result.status,
+    ok: result.ok,
+    nowPlayingXml: result.body
+  };
+}
+
+async function pollNowPlayingAfterPlay(ip, delays = [500, 1500, 3000, 5000]) {
+  const polls = [];
+  let elapsedMs = 0;
+  for (const delayMs of delays) {
+    await wait(Math.max(0, delayMs - elapsedMs));
+    elapsedMs = delayMs;
+    polls.push(await fetchNowPlayingSnapshot(ip, delayMs));
+  }
+  return polls;
+}
+
+async function playReplacementPresetById(ip, id) {
+  const targetIp = sanitizeIp(ip);
+  if (!targetIp) {
+    const error = new Error('Indirizzo IP Bose mancante o non valido.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const presetId = Number(id);
+  if (!Number.isInteger(presetId) || presetId < 1 || presetId > REPLACEMENT_PRESET_COUNT) {
+    const error = new Error('ID preset non valido. Usa un valore da 1 a 6.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const presets = await readReplacementPresets();
+  const preset = presets[presetId - 1];
+  const streamUrl = validateStreamUrl(preset?.streamUrl ?? '');
+  if (!streamUrl) {
+    const error = new Error(`Preset ${presetId}: streamUrl mancante.`);
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const startedAt = timestamp();
+  const stopResult = await postUpnpSoap(targetIp, 'urn:schemas-upnp-org:service:AVTransport:1#Stop', makeStopSoap());
+  const metadata = makeDidlLiteMetadata(streamUrl, preset.name);
+  const setUriResult = await postUpnpSoap(
+    targetIp,
+    'urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI',
+    makeSetAvTransportUriSoap(streamUrl, metadata)
+  );
+  await wait(300);
+  const playResult = await postUpnpSoap(targetIp, 'urn:schemas-upnp-org:service:AVTransport:1#Play', makePlaySoap());
+  const getTransportInfoResult = await postUpnpSoap(targetIp, 'urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo', makeGetTransportInfoSoap());
+  const getPositionInfoResult = await postUpnpSoap(targetIp, 'urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo', makeGetPositionInfoSoap());
+  const nowPlayingAfter = await pollNowPlayingAfterPlay(targetIp);
+
+  const updatedPreset = normalizeReplacementPreset({ ...preset, lastPlayedAt: timestamp() }, presetId - 1);
+  presets[presetId - 1] = updatedPreset;
+  await writeReplacementPresets(presets);
+
+  return {
+    timestamp: startedAt,
+    boseIp: targetIp,
+    preset: updatedPreset,
+    streamUrl,
+    mode: 'didl',
+    metadata,
+    stopResult,
+    setUriResult,
+    playResult,
+    getTransportInfoResult,
+    getPositionInfoResult,
+    nowPlayingAfter,
+    outcome: playResult.ok ? 'Play inviato alla Bose via UPnP AVTransport.' : 'Play inviato ma la risposta UPnP non è OK.'
+  };
+}
+
+function normalizeRadioBrowserStation(station) {
+  return {
+    name: String(station?.name ?? '').trim(),
+    streamUrl: String(station?.url_resolved || station?.url || '').trim(),
+    favicon: String(station?.favicon ?? '').trim(),
+    homepage: String(station?.homepage ?? '').trim(),
+    country: String(station?.country ?? '').trim(),
+    language: String(station?.language ?? '').trim(),
+    tags: String(station?.tags ?? '').trim(),
+    codec: String(station?.codec ?? '').trim(),
+    bitrate: Number(station?.bitrate ?? 0),
+    lastcheckok: Boolean(station?.lastcheckok)
+  };
+}
+
 async function fetchUpnpDescription(ip) {
   const targetIp = sanitizeIp(ip);
   if (!targetIp) {
@@ -784,42 +935,83 @@ app.put('/api/replacement-presets/:id', async (req, res, next) => {
 });
 
 app.post('/api/stream-check', async (req, res) => {
-  const streamUrl = String(req.body?.streamUrl ?? '').trim();
-  if (!streamUrl) {
-    return res.status(400).json({ ok: false, error: 'streamUrl mancante.' });
-  }
-
-  let parsedUrl;
   try {
-    parsedUrl = validateStreamUrl(streamUrl);
+    return res.json(await checkStreamReachability(req.body?.streamUrl));
   } catch (error) {
-    return res.status(400).json({ ok: false, error: error.message });
+    return res.status(error.statusCode ?? 400).json({ ok: false, potentiallyPlayable: false, error: error.message });
   }
+});
 
-  const startedAt = Date.now();
+app.post('/api/replacement-presets/:id/test-stream', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1 || id > REPLACEMENT_PRESET_COUNT) {
+      return res.status(400).json({ ok: false, potentiallyPlayable: false, error: 'ID preset non valido. Usa un valore da 1 a 6.' });
+    }
+
+    const presets = await readReplacementPresets();
+    const preset = presets[id - 1];
+    const result = await checkStreamReachability(preset?.streamUrl);
+    return res.json({ preset, ...result });
+  } catch (error) {
+    if (error.statusCode || error instanceof TypeError || /streamUrl/.test(error.message ?? '')) {
+      return res.status(error.statusCode ?? 400).json({ ok: false, potentiallyPlayable: false, error: error.message });
+    }
+
+    return next(error);
+  }
+});
+
+app.post('/api/replacement-presets/:id/play', async (req, res, next) => {
+  try {
+    const boseIp = req.body?.boseIp ?? req.query.boseIp ?? process.env.BOSE_IP;
+    return res.json(await playReplacementPresetById(boseIp, req.params.id));
+  } catch (error) {
+    if (error.statusCode || error instanceof TypeError || /streamUrl|Preset|Indirizzo IP|ID preset/.test(error.message ?? '')) {
+      return res.status(error.statusCode ?? 400).json({ error: error.message });
+    }
+
+    return next(error);
+  }
+});
+
+app.get('/api/radio-search', async (req, res) => {
+  const query = String(req.query.q ?? '').trim();
+  const country = String(req.query.country ?? '').trim();
+  const tag = String(req.query.tag ?? '').trim();
+
+  const searchUrl = new URL('https://de1.api.radio-browser.info/json/stations/search');
+  if (query) searchUrl.searchParams.set('name', query);
+  if (country) searchUrl.searchParams.set('country', country);
+  if (tag) searchUrl.searchParams.set('tag', tag);
+  searchUrl.searchParams.set('hidebroken', 'true');
+  searchUrl.searchParams.set('limit', '30');
+  searchUrl.searchParams.set('order', 'clickcount');
+  searchUrl.searchParams.set('reverse', 'true');
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
   try {
-    let response = await fetch(parsedUrl, { method: 'HEAD', signal: controller.signal });
-    if (response.status === 405 || response.status === 403) {
-      response = await fetch(parsedUrl, { method: 'GET', signal: controller.signal, headers: { Range: 'bytes=0-0' } });
+    const response = await fetch(searchUrl, {
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'SoundTouchRadioBridge/1.0'
+      }
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      return res.status(response.status).json({ error: `Radio Browser HTTP ${response.status}.`, details: payload });
     }
 
-    return res.json({
-      ok: response.ok,
-      status: response.status,
-      mimeType: response.headers.get('content-type') ?? null,
-      contentLength: response.headers.get('content-length') ?? null,
-      finalUrl: response.url,
-      durationMs: Date.now() - startedAt
-    });
+    const stations = (Array.isArray(payload) ? payload : [])
+      .map(normalizeRadioBrowserStation)
+      .filter((station) => station.name && station.streamUrl);
+
+    return res.json({ source: searchUrl.toString(), stations });
   } catch (error) {
-    return res.status(error.name === 'AbortError' ? 504 : 502).json({
-      ok: false,
-      error: error.name === 'AbortError' ? `Timeout dopo ${REQUEST_TIMEOUT_MS} ms.` : error.message,
-      durationMs: Date.now() - startedAt
-    });
+    return res.status(error.name === 'AbortError' ? 504 : 502).json({ error: error.name === 'AbortError' ? `Timeout dopo ${REQUEST_TIMEOUT_MS} ms.` : error.message });
   } finally {
     clearTimeout(timeoutId);
   }

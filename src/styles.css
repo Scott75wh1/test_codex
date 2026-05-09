@@ -1139,3 +1139,275 @@ pre {
     grid-template-columns: 1fr;
   }
 }
+
+.v11-hero-panel {
+  grid-column: 1 / -1;
+  overflow: hidden;
+}
+
+.v11-hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: center;
+  padding: 1rem;
+  border: 1px solid rgba(34, 211, 238, 0.18);
+  border-radius: 1.4rem;
+  background: radial-gradient(circle at top left, rgba(34, 211, 238, 0.2), transparent 35%), rgba(15, 23, 42, 0.58);
+}
+
+.v11-hero h1 {
+  margin: 0.15rem 0;
+  color: #f8fafc;
+  font-size: clamp(2rem, 5vw, 4rem);
+  letter-spacing: -0.06em;
+}
+
+.bose-status-card {
+  min-width: 14rem;
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  border-radius: 1.25rem;
+  padding: 0.9rem 1rem;
+  background: rgba(2, 6, 23, 0.72);
+}
+
+.status-dot {
+  width: 0.9rem;
+  height: 0.9rem;
+  border-radius: 999px;
+  background: #fb7185;
+  box-shadow: 0 0 0 0.35rem rgba(251, 113, 133, 0.16);
+}
+
+.status-dot.online {
+  background: #34d399;
+  box-shadow: 0 0 0 0.35rem rgba(52, 211, 153, 0.16);
+}
+
+.status-dot.loading {
+  background: #fbbf24;
+  box-shadow: 0 0 0 0.35rem rgba(251, 191, 36, 0.16);
+}
+
+.v11-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(22rem, 0.75fr);
+  gap: 1.25rem;
+  align-items: start;
+  margin-top: 1.25rem;
+}
+
+.v11-presets-column,
+.v11-search-column,
+.radio-search-panel,
+.manual-preset-form {
+  display: grid;
+  gap: 1rem;
+}
+
+.section-title-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  align-items: flex-start;
+}
+
+.v11-toolbar {
+  grid-template-columns: minmax(0, 1.2fr) minmax(13rem, 0.8fr) minmax(9rem, auto);
+}
+
+.touch-button,
+.primary-action,
+.preset-card-actions button,
+.result-actions button,
+.preset-picker-inline button,
+.preset-picker-grid button {
+  min-height: 3rem;
+  border-radius: 0.95rem;
+  font-weight: 800;
+}
+
+.primary-action {
+  border-color: rgba(45, 212, 191, 0.52);
+  background: linear-gradient(135deg, rgba(20, 184, 166, 0.35), rgba(14, 165, 233, 0.24));
+  color: #ecfeff;
+}
+
+.preset-card-actions,
+.result-actions,
+.search-filter-row,
+.preset-picker-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+
+.preset-card-actions button,
+.result-actions button,
+.preset-picker-inline button {
+  flex: 1 1 8rem;
+}
+
+.radio-search-panel {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 1.25rem;
+  padding: 1rem;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.radio-search-form {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.big-search-input {
+  min-height: 3.6rem;
+  font-size: 1.15rem;
+  border-radius: 1rem;
+}
+
+.search-filter-row > * {
+  flex: 1 1 10rem;
+}
+
+.manual-preset-form {
+  border: 1px solid rgba(45, 212, 191, 0.18);
+  border-radius: 1rem;
+  padding: 0.9rem;
+  background: rgba(8, 47, 73, 0.22);
+}
+
+.radio-results-list {
+  display: grid;
+  gap: 0.85rem;
+  max-height: 54rem;
+  overflow: auto;
+  padding-right: 0.25rem;
+}
+
+.radio-result-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  border-radius: 1rem;
+  padding: 0.85rem;
+  background: rgba(2, 6, 23, 0.48);
+}
+
+.radio-result-card img {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 0.8rem;
+  object-fit: contain;
+  background: rgba(14, 165, 233, 0.14);
+}
+
+.radio-result-card h3,
+.manual-preset-form h3 {
+  margin: 0 0 0.25rem;
+}
+
+.radio-result-card code {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.radio-result-card .stream-status,
+.radio-result-card .result-actions {
+  grid-column: 1 / -1;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: rgba(2, 6, 23, 0.74);
+  backdrop-filter: blur(10px);
+}
+
+.preset-modal {
+  width: min(42rem, 100%);
+  display: grid;
+  gap: 1rem;
+  border: 1px solid rgba(34, 211, 238, 0.32);
+  border-radius: 1.35rem;
+  padding: 1rem;
+  background: #0f172a;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.preset-modal code {
+  overflow-wrap: anywhere;
+}
+
+.preset-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.75rem;
+}
+
+.preset-picker-grid button {
+  display: grid;
+  gap: 0.25rem;
+  justify-items: center;
+  padding: 1rem;
+}
+
+.preset-picker-grid strong {
+  display: grid;
+  place-items: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 999px;
+  color: #020617;
+  background: #67e8f9;
+}
+
+.error-text {
+  color: #fecaca;
+}
+
+.radio-preset-card-grid article.loading {
+  border-color: rgba(251, 191, 36, 0.62);
+}
+
+@media (max-width: 1100px) {
+  .v11-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 780px) {
+  .v11-hero,
+  .section-title-row {
+    flex-direction: column;
+  }
+
+  .bose-status-card {
+    width: 100%;
+  }
+
+  .v11-preset-grid,
+  .preset-picker-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .radio-result-card {
+    grid-template-columns: 1fr;
+  }
+
+  .touch-button,
+  .primary-action,
+  .preset-card-actions button,
+  .result-actions button,
+  .preset-picker-inline button {
+    width: 100%;
+  }
+}

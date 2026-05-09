@@ -35,14 +35,15 @@ La V5 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
   - `POST /select` con ContentItem XML sperimentale
   - `POST /volume` con payload XML `<volume>...</volume>`
   - `POST /key` per `PLAY_PAUSE`, `STOP`, `VOLUME_UP`, `VOLUME_DOWN`, `PRESET_1`...`PRESET_6`, `ADD_FAVORITE`, `REMOVE_FAVORITE`
-  - `GET /api/replacement-presets` e `PUT /api/replacement-presets/:id` per il pannello preset sostitutivi
-  - `POST /api/stream-check` per verificare raggiungibilità e MIME type degli stream diretti
+  - `GET /api/replacement-presets`, `PUT /api/replacement-presets/:id`, `POST /api/replacement-presets/:id/play` e `POST /api/replacement-presets/:id/test-stream` per leggere, salvare, testare e riprodurre i preset sostitutivi locali
+  - `GET /api/radio-search?q=QUERY&country=COUNTRY&tag=TAG` per cercare stream via Radio Browser, normalizzati prima di salvarli nel JSON locale
+  - `POST /api/stream-check` per verificare raggiungibilità, MIME type, potenziale compatibilità audio e redirect/final URL degli stream diretti
   - `POST /api/upnp/:ip/stop`, `POST /api/upnp/:ip/set-uri`, `POST /api/upnp/:ip/get-media-info`, `POST /api/upnp/:ip/get-transport-info`, `POST /api/upnp/:ip/get-position-info`, `POST /api/upnp/:ip/play` e `GET /api/upnp/:ip/root-desc` per test AVTransport su porta `8091`
 - Lista di radio web in `data/radios.json`, esposta da `GET /api/radios`, pronta come base dati per preset/streaming futuri.
-- Nuova sezione principale **Radio Presets**: sei card grandi stile preset fisici Bose che usano `data/replacement-presets.json` e avviano la riproduzione direttamente sulla Bose via UPnP AVTransport.
-- Ogni replacement preset ha `id` 1-6, `name`, `streamUrl`, `logoUrl` opzionale, `category` opzionale, `notes`, `enabled` e `lastPlayedAt`; la UI consente editing completo e salvataggio nel JSON locale.
-- Il player V10 non usa audio HTML5 per riprodurre: il browser è solo telecomando, l’audio esce dalla Bose via UPnP. Il test stream URL mostra HTTP status, content-type e redirect/final URL quando disponibile.
-- Sezione **Bose Output Strategy** con opzioni realistiche: AirPlay fallback, Bluetooth fallback, ricerca UPnP/DLNA e possibile bridge locale futuro. Non viene promesso playback diretto Bose per gli stream replacement.
+- Nuova UI principale **V11 Final MVP**: header moderno, stato Bose/realtime, griglia dei 6 preset stile tasti fisici Bose, Stop globale, volume, ricerca Radio Browser, form manuale e modal per assegnare una radio a un preset.
+- Ogni replacement preset ha `id` 1-6, `name`, `streamUrl`, `logoUrl` opzionale, `category` opzionale, `notes`, `enabled` e `lastPlayedAt`; tutti i preset, default e utente, vengono letti solo da `data/replacement-presets.json`.
+- Il play di un preset chiama `POST /api/replacement-presets/:id/play`: il backend legge lo `streamUrl` dal JSON e usa lo stesso flusso per tutti i preset: Stop UPnP, SetAVTransportURI, attesa 300 ms, Play, GetTransportInfo, GetPositionInfo e polling `/now_playing`.
+- Radio Browser serve solo per trovare stream radio; la riproduzione non usa AirPlay, Bluetooth o audio HTML5, ma avviene direttamente dalla Bose via UPnP AVTransport sulla porta `8091`.
 - Nuova sezione **UPnP Playback Test**: prova sperimentale di `SetAVTransportURI` e `Play` su `http://BOSE_IP:8091/AVTransport/Control`, con polling `/now_playing` dopo il comando e probe `rootDesc.xml`/porta 8091.
 
 ## Requisiti
@@ -167,10 +168,15 @@ Replacement presets locali:
 curl http://localhost:3001/api/replacement-presets
 curl -X PUT http://localhost:3001/api/replacement-presets/1 \
   -H 'Content-Type: application/json' \
-  -d '{"name":"Radio Paradise","streamUrl":"https://stream.radioparadise.com/aac-320","notes":"Preset app locale","enabled":true}'
+  -d '{"name":"SomaFM Groove Salad","streamUrl":"http://ice1.somafm.com/groovesalad-128-mp3","category":"Downtempo","notes":"Test","enabled":true}'
+curl -X POST http://localhost:3001/api/replacement-presets/1/test-stream
+curl -X POST http://localhost:3001/api/replacement-presets/1/play \
+  -H 'Content-Type: application/json' \
+  -d '{"boseIp":"192.168.1.50"}'
+curl 'http://localhost:3001/api/radio-search?q=bbc&country=United%20Kingdom&tag=news'
 curl -X POST http://localhost:3001/api/stream-check \
   -H 'Content-Type: application/json' \
-  -d '{"streamUrl":"https://stream.radioparadise.com/aac-320"}'
+  -d '{"streamUrl":"http://ice1.somafm.com/groovesalad-128-mp3"}'
 ```
 
 UPnP AVTransport sperimentale su porta 8091:
@@ -221,7 +227,7 @@ curl -X POST "http://BOSE_IP:8090/volume" \
 
 Dai test diagnostici V7/V8 emerge che `/presets` sulle API locali SoundTouch è disponibile solo in lettura, mentre `/key PRESET_1`...`PRESET_6` può restituire HTTP 200 ma portare `/now_playing` a `INVALID_SOURCE`. Anche `POST /select` con ContentItem TuneIn legacy può rispondere HTTP 200 senza produrre audio, e `/capabilities` non espone endpoint locali utili per riscrivere preset radio o risolvere cataloghi TuneIn.
 
-Conclusione operativa: i preset radio legacy sembrano dipendere da una risoluzione cloud/TuneIn non più affidabile o non più disponibile. L’app non ripristina né riscrive i preset Bose nativi: crea preset sostitutivi gestiti localmente in `data/replacement-presets.json`. Con V10, il click su una card preset invia Stop, SetAVTransportURI, Play, GetTransportInfo e polling `/now_playing`: la riproduzione avviene direttamente dalla Bose tramite UPnP AVTransport, senza AirPlay/Bluetooth e senza usare il browser come player audio. Serve che Mac/server e Bose siano sulla stessa LAN e che la porta UPnP `8091` della SoundTouch sia raggiungibile.
+Conclusione operativa: i preset radio legacy sembrano dipendere da una risoluzione cloud/TuneIn non più affidabile o non più disponibile. I preset Bose nativi non risultano modificabili tramite API locale ufficiale: l’app non li ripristina né li riscrive, ma crea sei preset sostitutivi gestiti localmente in `data/replacement-presets.json`. Con V11, il click su una card preset invia al backend solo l’ID preset; il backend legge lo stream dal JSON e invia Stop, SetAVTransportURI, Play, GetTransportInfo, GetPositionInfo e polling `/now_playing`. La riproduzione avviene direttamente dalla Bose tramite UPnP AVTransport, senza AirPlay/Bluetooth e senza usare il browser come player audio. Radio Browser serve esclusivamente per trovare URL di stream radio da salvare nei preset locali. Serve che Mac/server e Bose siano sulla stessa LAN e che la porta UPnP `8091` della SoundTouch sia raggiungibile.
 
 ## Note SoundTouch
 
