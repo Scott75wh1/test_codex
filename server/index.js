@@ -34,8 +34,10 @@ function normalizeReplacementPreset(preset, index) {
     name: String(preset?.name ?? `Preset ${fallbackId}`).trim() || `Preset ${fallbackId}`,
     streamUrl: String(preset?.streamUrl ?? '').trim(),
     logoUrl: String(preset?.logoUrl ?? '').trim(),
+    category: String(preset?.category ?? '').trim(),
     notes: String(preset?.notes ?? '').trim(),
-    enabled: Boolean(preset?.enabled)
+    enabled: Boolean(preset?.enabled),
+    lastPlayedAt: String(preset?.lastPlayedAt ?? '').trim()
   };
 }
 
@@ -809,6 +811,7 @@ app.post('/api/stream-check', async (req, res) => {
       status: response.status,
       mimeType: response.headers.get('content-type') ?? null,
       contentLength: response.headers.get('content-length') ?? null,
+      finalUrl: response.url,
       durationMs: Date.now() - startedAt
     });
   } catch (error) {

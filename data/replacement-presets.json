@@ -1,50 +1,62 @@
 [
   {
     "id": 1,
-    "name": "Radio Paradise Main Mix",
-    "streamUrl": "https://stream.radioparadise.com/aac-320",
+    "name": "BBC World Service",
+    "streamUrl": "http://stream.live.vc.bbcmedia.co.uk/bbc_world_service",
     "logoUrl": "",
-    "notes": "Preset sostitutivo gestito localmente dall'app; non scrive nei preset Bose legacy.",
-    "enabled": true
+    "category": "News",
+    "notes": "Preset radio app locale: riproduzione diretta Bose via UPnP AVTransport.",
+    "enabled": true,
+    "lastPlayedAt": ""
   },
   {
     "id": 2,
     "name": "SomaFM Groove Salad",
-    "streamUrl": "https://ice1.somafm.com/groovesalad-128-mp3",
+    "streamUrl": "http://ice1.somafm.com/groovesalad-128-mp3",
     "logoUrl": "",
-    "notes": "Stream diretto MP3 per test browser/AirPlay/Bluetooth.",
-    "enabled": true
+    "category": "Downtempo",
+    "notes": "Stream diretto MP3 usato per test UPnP AVTransport.",
+    "enabled": true,
+    "lastPlayedAt": ""
   },
   {
     "id": 3,
-    "name": "BBC World Service",
-    "streamUrl": "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service",
+    "name": "Radio Paradise 128",
+    "streamUrl": "http://stream.radioparadise.com/mp3-128",
     "logoUrl": "",
-    "notes": "News radio; verificare availability geografica dal browser.",
-    "enabled": true
+    "category": "Eclectic",
+    "notes": "Preset radio app locale a bitrate 128 kbps.",
+    "enabled": true,
+    "lastPlayedAt": ""
   },
   {
     "id": 4,
     "name": "Preset 4",
     "streamUrl": "",
     "logoUrl": "",
+    "category": "",
     "notes": "Slot libero per sostituire un preset Bose non funzionante.",
-    "enabled": false
+    "enabled": false,
+    "lastPlayedAt": ""
   },
   {
     "id": 5,
     "name": "Preset 5",
     "streamUrl": "",
     "logoUrl": "",
+    "category": "",
     "notes": "Slot libero per sostituire un preset Bose non funzionante.",
-    "enabled": false
+    "enabled": false,
+    "lastPlayedAt": ""
   },
   {
     "id": 6,
     "name": "Preset 6",
     "streamUrl": "",
     "logoUrl": "",
+    "category": "",
     "notes": "Slot libero per sostituire un preset Bose non funzionante.",
-    "enabled": false
+    "enabled": false,
+    "lastPlayedAt": ""
   }
 ]

@@ -24,8 +24,10 @@ type ReplacementPreset = {
   name: string;
   streamUrl: string;
   logoUrl?: string;
+  category?: string;
   notes: string;
   enabled: boolean;
+  lastPlayedAt?: string;
 };
 
 type StreamCheckResult = {
@@ -33,6 +35,7 @@ type StreamCheckResult = {
   status?: number;
   mimeType?: string | null;
   contentLength?: string | null;
+  finalUrl?: string;
   durationMs?: number;
   error?: string;
 };
@@ -77,6 +80,19 @@ type UpnpPlaybackLog = {
   getPositionInfoResult?: UpnpSoapResult;
   playResult?: UpnpSoapResult;
   rootDescResult?: UpnpRootDescResult;
+  nowPlayingAfter: PresetLabPoll[];
+  errorUpdateRaw?: string | null;
+  outcome: string;
+};
+
+type RadioPresetPlayResult = {
+  timestamp: string;
+  preset: ReplacementPreset;
+  stopResult?: UpnpSoapResult;
+  setUriResult?: UpnpSoapResult;
+  playResult?: UpnpSoapResult;
+  getTransportInfoResult?: UpnpSoapResult;
+  getPositionInfoResult?: UpnpSoapResult;
   nowPlayingAfter: PresetLabPoll[];
   errorUpdateRaw?: string | null;
   outcome: string;
@@ -601,6 +617,9 @@ export default function App() {
   const [replacementSavingId, setReplacementSavingId] = useState<number | null>(null);
   const [replacementStreamChecks, setReplacementStreamChecks] = useState<Record<number, StreamCheckResult>>({});
   const [replacementAudioUrl, setReplacementAudioUrl] = useState('');
+  const [radioPresetPlayingId, setRadioPresetPlayingId] = useState<number | null>(null);
+  const [radioPresetNowPlaying, setRadioPresetNowPlaying] = useState<ReplacementPreset | null>(null);
+  const [radioPresetLastResult, setRadioPresetLastResult] = useState<RadioPresetPlayResult | null>(null);
   const [selectedUpnpPresetId, setSelectedUpnpPresetId] = useState(2);
   const [upnpStreamUrl, setUpnpStreamUrl] = useState(UPNP_TEST_STREAMS[0]);
   const [upnpSetUriMode, setUpnpSetUriMode] = useState<UpnpSetUriMode>('direct');
@@ -1657,12 +1676,15 @@ export default function App() {
     }
   }
 
-  async function postUpnpAction(endpoint: 'stop' | 'set-uri' | 'get-media-info' | 'get-transport-info' | 'get-position-info' | 'play') {
+  async function postUpnpActionFor(
+    endpoint: 'stop' | 'set-uri' | 'get-media-info' | 'get-transport-info' | 'get-position-info' | 'play',
+    options: { streamUrl?: string; mode?: UpnpSetUriMode; title?: string } = {}
+  ) {
     const response = await fetch(`${API_BASE}/upnp/${encodedIp}/${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: endpoint === 'set-uri'
-        ? JSON.stringify({ streamUrl: upnpStreamUrl.trim(), mode: upnpSetUriMode, title: getSelectedUpnpPreset()?.name ?? 'Groove Salad' })
+        ? JSON.stringify({ streamUrl: options.streamUrl?.trim() ?? upnpStreamUrl.trim(), mode: options.mode ?? upnpSetUriMode, title: options.title ?? getSelectedUpnpPreset()?.name ?? 'Groove Salad' })
         : '{}'
     });
     const payload = await response.json();
@@ -1671,6 +1693,104 @@ export default function App() {
     }
 
     return payload as UpnpSoapResult;
+  }
+
+  async function postUpnpAction(endpoint: 'stop' | 'set-uri' | 'get-media-info' | 'get-transport-info' | 'get-position-info' | 'play') {
+    return postUpnpActionFor(endpoint);
+  }
+
+  function validateRadioPresetStream(preset: ReplacementPreset) {
+    if (!preset.streamUrl.trim()) {
+      throw new Error('Stream URL obbligatorio.');
+    }
+
+    if (!/^https?:\/\//i.test(preset.streamUrl.trim())) {
+      throw new Error('Stream URL deve iniziare con http:// o https://.');
+    }
+  }
+
+  async function playRadioPreset(preset: ReplacementPreset) {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Play preset annullato: IP Bose mancante.'));
+      return;
+    }
+
+    try {
+      validateRadioPresetStream(preset);
+    } catch (error) {
+      appendLog(makeLog('offline', error instanceof Error ? error.message : 'Preset non valido.'));
+      return;
+    }
+
+    setRadioPresetPlayingId(preset.id);
+    lastRealtimeErrorRawRef.current = null;
+    const startedAt = new Date().toISOString();
+
+    try {
+      const stopResult = await postUpnpActionFor('stop');
+      const setUriResult = await postUpnpActionFor('set-uri', { streamUrl: preset.streamUrl, mode: 'didl', title: preset.name });
+      await waitFor(300);
+      const playResult = await postUpnpActionFor('play');
+      const getTransportInfoResult = await postUpnpActionFor('get-transport-info');
+      const getPositionInfoResult = await postUpnpActionFor('get-position-info');
+      const nowPlayingAfter = await pollUpnpNowPlayingAfterPlay(UPNP_VERIFY_POLL_DELAYS);
+      const nextPreset = { ...preset, lastPlayedAt: new Date().toISOString() };
+      await saveReplacementPreset(nextPreset);
+      setRadioPresetNowPlaying(nextPreset);
+      const log: RadioPresetPlayResult = {
+        timestamp: startedAt,
+        preset: nextPreset,
+        stopResult,
+        setUriResult,
+        playResult,
+        getTransportInfoResult,
+        getPositionInfoResult,
+        nowPlayingAfter,
+        errorUpdateRaw: lastRealtimeErrorRawRef.current,
+        outcome: `Play inviato alla Bose · transport ${/CurrentTransportState[^>]*>([^<]+)/i.exec(getTransportInfoResult.responseBody)?.[1] ?? 'n/d'}`
+      };
+      setRadioPresetLastResult(log);
+      appendLog(makeLog(playResult.ok ? 'online' : 'offline', `Radio preset ${preset.id}: ${log.outcome}`, boseIp));
+    } catch (error) {
+      const log: RadioPresetPlayResult = {
+        timestamp: startedAt,
+        preset,
+        nowPlayingAfter: [],
+        errorUpdateRaw: lastRealtimeErrorRawRef.current,
+        outcome: error instanceof Error ? error.message : 'Play preset fallito.'
+      };
+      setRadioPresetLastResult(log);
+      appendLog(makeLog('offline', log.outcome, boseIp));
+    } finally {
+      setRadioPresetPlayingId(null);
+    }
+  }
+
+  async function stopRadioPresetPlayback() {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'Stop globale annullato: IP Bose mancante.'));
+      return;
+    }
+
+    setRadioPresetPlayingId(-1);
+    try {
+      const stopResult = await postUpnpActionFor('stop');
+      const getTransportInfoResult = await postUpnpActionFor('get-transport-info');
+      setRadioPresetLastResult({
+        timestamp: new Date().toISOString(),
+        preset: radioPresetNowPlaying ?? { id: 0, name: 'Stop globale', streamUrl: '', notes: '', enabled: false },
+        stopResult,
+        getTransportInfoResult,
+        nowPlayingAfter: [],
+        outcome: 'Stop globale inviato via UPnP'
+      });
+      setRadioPresetNowPlaying(null);
+      appendLog(makeLog(stopResult.ok ? 'online' : 'offline', 'Stop globale UPnP inviato.', boseIp));
+    } catch (error) {
+      appendLog(makeLog('offline', error instanceof Error ? error.message : 'Stop globale fallito.', boseIp));
+    } finally {
+      setRadioPresetPlayingId(null);
+    }
   }
 
   async function runUpnpVerifyFlow() {
@@ -1841,6 +1961,98 @@ export default function App() {
       </header>
 
       <main className="dashboard-grid">
+        <section className="panel radio-presets-player-panel">
+          <div className="response-heading">
+            <div>
+              <p className="eyebrow">V10 Radio Presets Player MVP</p>
+              <h2>Radio Presets</h2>
+            </div>
+            <span>telecomando UPnP diretto · audio dalla Bose</span>
+          </div>
+          <p className="hint">
+            Clicca un preset: il browser invia Stop → SetAVTransportURI → Play alla Bose via UPnP AVTransport. Non viene usato audio HTML5: il browser è solo telecomando.
+          </p>
+
+          <div className="radio-player-toolbar">
+            <div className="now-playing-pill">
+              <span>Now playing</span>
+              <strong>{radioPresetNowPlaying?.name ?? realtimeSnapshot.title ?? 'n/d'}</strong>
+              <small>source {realtimeSnapshot.source} · play {realtimeSnapshot.playStatus} · realtime {realtimeState}</small>
+            </div>
+            <div className="radio-volume-control">
+              <label className="field-label" htmlFor="radio-volume">Volume Bose: {volume}</label>
+              <input id="radio-volume" type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(Number(event.target.value))} />
+              <button type="button" onClick={postVolume} disabled={!canSend}>Applica volume</button>
+            </div>
+            <button type="button" className="stop-button" onClick={() => void stopRadioPresetPlayback()} disabled={!canSend || radioPresetPlayingId !== null}>
+              Stop globale
+            </button>
+          </div>
+
+          <div className="radio-preset-card-grid">
+            {replacementPresets.map((preset) => {
+              const streamCheck = replacementStreamChecks[preset.id];
+              const isPlaying = radioPresetPlayingId === preset.id;
+              const isCurrent = radioPresetNowPlaying?.id === preset.id;
+
+              return (
+                <article key={`radio-player-${preset.id}`} className={`${!preset.enabled ? 'disabled' : ''} ${isCurrent ? 'current' : ''}`}>
+                  <div className="physical-preset-number">{preset.id}</div>
+                  {preset.logoUrl ? <img src={preset.logoUrl} alt="" /> : <div className="preset-logo-placeholder">♪</div>}
+                  <div>
+                    <h3>{preset.name}</h3>
+                    <p>{preset.category || 'Radio'}</p>
+                    <code>{preset.streamUrl || 'stream URL mancante'}</code>
+                  </div>
+                  <button type="button" onClick={() => void playRadioPreset(preset)} disabled={!canSend || !preset.enabled || isPlaying || !preset.streamUrl.trim()}>
+                    {isPlaying ? 'Avvio…' : 'Play'}
+                  </button>
+                  <button type="button" onClick={() => void checkReplacementStream(preset)} disabled={!preset.streamUrl.trim()}>
+                    Test stream URL
+                  </button>
+                  <div className={`stream-status ${streamCheck?.ok ? 'ok' : streamCheck ? 'error' : 'idle'}`}>
+                    <span>{streamCheck ? (streamCheck.ok ? 'stream raggiungibile' : 'errore stream') : 'stream non testato'}</span>
+                    <small>{streamCheck?.mimeType ? `${streamCheck.mimeType}` : streamCheck?.error ?? (streamCheck?.status ? `HTTP ${streamCheck.status}` : 'content-type n/d')}</small>
+                    {streamCheck?.finalUrl ? <small>final URL: {streamCheck.finalUrl}</small> : null}
+                  </div>
+                  {preset.lastPlayedAt ? <small>Ultimo play: {new Date(preset.lastPlayedAt).toLocaleString('it-IT')}</small> : null}
+                </article>
+              );
+            })}
+          </div>
+
+          <details className="advanced-logs">
+            <summary>Advanced logs</summary>
+            {radioPresetLastResult ? (
+              <div className="poll-grid">
+                <details open>
+                  <summary>SOAP request/response</summary>
+                  <pre>{JSON.stringify({ stop: radioPresetLastResult.stopResult, setUri: radioPresetLastResult.setUriResult, play: radioPresetLastResult.playResult }, null, 2)}</pre>
+                </details>
+                <details open>
+                  <summary>GetTransportInfo</summary>
+                  <pre>{JSON.stringify(radioPresetLastResult.getTransportInfoResult ?? {}, null, 2)}</pre>
+                </details>
+                <details>
+                  <summary>GetPositionInfo</summary>
+                  <pre>{JSON.stringify(radioPresetLastResult.getPositionInfoResult ?? {}, null, 2)}</pre>
+                </details>
+                <details open>
+                  <summary>/now_playing polling</summary>
+                  <pre>{JSON.stringify(radioPresetLastResult.nowPlayingAfter, null, 2)}</pre>
+                </details>
+                {radioPresetLastResult.errorUpdateRaw ? <pre>{radioPresetLastResult.errorUpdateRaw}</pre> : null}
+              </div>
+            ) : <p className="hint">Nessun log player disponibile.</p>}
+          </details>
+        </section>
+
+        <section className="panel advanced-diagnostics-heading">
+          <details>
+            <summary>Advanced / Diagnostics</summary>
+            <p className="hint">Le sezioni sotto mantengono inspector, replacement preset editor, test UPnP avanzato e laboratori diagnostici.</p>
+          </details>
+        </section>
         <section className="panel controls-panel">
           <h2>Connessione Bose</h2>
           <label className="field-label" htmlFor="bose-ip">
@@ -2392,6 +2604,20 @@ export default function App() {
                   value={preset.name}
                   onChange={(event) => updateReplacementPreset(preset.id, { name: event.target.value })}
                 />
+                <label className="field-label" htmlFor={`replacement-logo-${preset.id}`}>Logo URL</label>
+                <input
+                  id={`replacement-logo-${preset.id}`}
+                  value={preset.logoUrl ?? ''}
+                  onChange={(event) => updateReplacementPreset(preset.id, { logoUrl: event.target.value })}
+                  placeholder="https://example.com/logo.png"
+                />
+                <label className="field-label" htmlFor={`replacement-category-${preset.id}`}>Categoria</label>
+                <input
+                  id={`replacement-category-${preset.id}`}
+                  value={preset.category ?? ''}
+                  onChange={(event) => updateReplacementPreset(preset.id, { category: event.target.value })}
+                  placeholder="News, Jazz, Rock…"
+                />
                 <label className="field-label" htmlFor={`replacement-stream-${preset.id}`}>Stream URL</label>
                 <input
                   id={`replacement-stream-${preset.id}`}
@@ -2418,6 +2644,7 @@ export default function App() {
                   <span>Stato stream</span>
                   <strong>{streamCheck ? (streamCheck.ok ? 'raggiungibile' : 'errore stream') : 'non testato'}</strong>
                   <small>{streamCheck?.mimeType ? `MIME: ${streamCheck.mimeType}` : streamCheck?.error ?? (streamCheck?.status ? `HTTP ${streamCheck.status}` : 'MIME type n/d')}</small>
+                  {streamCheck?.finalUrl ? <small>final URL: {streamCheck.finalUrl}</small> : null}
                 </div>
               </article>
             );

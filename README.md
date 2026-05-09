@@ -39,8 +39,9 @@ La V5 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
   - `POST /api/stream-check` per verificare raggiungibilità e MIME type degli stream diretti
   - `POST /api/upnp/:ip/stop`, `POST /api/upnp/:ip/set-uri`, `POST /api/upnp/:ip/get-media-info`, `POST /api/upnp/:ip/get-transport-info`, `POST /api/upnp/:ip/get-position-info`, `POST /api/upnp/:ip/play` e `GET /api/upnp/:ip/root-desc` per test AVTransport su porta `8091`
 - Lista di radio web in `data/radios.json`, esposta da `GET /api/radios`, pronta come base dati per preset/streaming futuri.
-- Nuova sezione **Replacement Presets**: sei preset radio sostitutivi gestiti dall’app in `data/replacement-presets.json`, modificabili dalla UI e salvati via backend locale.
-- Ogni replacement preset ha `id` 1-6, `name`, `streamUrl`, `logoUrl` opzionale, `notes` e `enabled`; la UI consente test stream nel browser con player HTML5, stato raggiungibilità, errore e MIME type quando disponibile.
+- Nuova sezione principale **Radio Presets**: sei card grandi stile preset fisici Bose che usano `data/replacement-presets.json` e avviano la riproduzione direttamente sulla Bose via UPnP AVTransport.
+- Ogni replacement preset ha `id` 1-6, `name`, `streamUrl`, `logoUrl` opzionale, `category` opzionale, `notes`, `enabled` e `lastPlayedAt`; la UI consente editing completo e salvataggio nel JSON locale.
+- Il player V10 non usa audio HTML5 per riprodurre: il browser è solo telecomando, l’audio esce dalla Bose via UPnP. Il test stream URL mostra HTTP status, content-type e redirect/final URL quando disponibile.
 - Sezione **Bose Output Strategy** con opzioni realistiche: AirPlay fallback, Bluetooth fallback, ricerca UPnP/DLNA e possibile bridge locale futuro. Non viene promesso playback diretto Bose per gli stream replacement.
 - Nuova sezione **UPnP Playback Test**: prova sperimentale di `SetAVTransportURI` e `Play` su `http://BOSE_IP:8091/AVTransport/Control`, con polling `/now_playing` dopo il comando e probe `rootDesc.xml`/porta 8091.
 
@@ -220,7 +221,7 @@ curl -X POST "http://BOSE_IP:8090/volume" \
 
 Dai test diagnostici V7/V8 emerge che `/presets` sulle API locali SoundTouch è disponibile solo in lettura, mentre `/key PRESET_1`...`PRESET_6` può restituire HTTP 200 ma portare `/now_playing` a `INVALID_SOURCE`. Anche `POST /select` con ContentItem TuneIn legacy può rispondere HTTP 200 senza produrre audio, e `/capabilities` non espone endpoint locali utili per riscrivere preset radio o risolvere cataloghi TuneIn.
 
-Conclusione operativa: i preset radio legacy sembrano dipendere da una risoluzione cloud/TuneIn non più affidabile o non più disponibile. L’MVP V8 non prova a riscrivere i preset Bose: l’app diventa il nuovo pannello preset radio locale, salvando sei replacement preset in `data/replacement-presets.json` e riproducendoli/testandoli dal browser. L’uscita verso Bose resta una strategia esterna (AirPlay, Bluetooth, ricerca UPnP/DLNA o bridge locale futuro), senza promettere playback diretto Bose dagli stream replacement. La V9 aggiunge un test AVTransport proprio per verificare se `SetAVTransportURI + Play` può diventare il ponte locale diretto; il flusso robusto prova Stop, SetAVTransportURI in Mode A (URL diretto) o Mode B (DIDL-Lite metadata XML-escaped), GetMediaInfo, GetTransportInfo, GetPositionInfo e Play. Finché il test non riesce sul dispositivo reale resta un percorso sperimentale.
+Conclusione operativa: i preset radio legacy sembrano dipendere da una risoluzione cloud/TuneIn non più affidabile o non più disponibile. L’app non ripristina né riscrive i preset Bose nativi: crea preset sostitutivi gestiti localmente in `data/replacement-presets.json`. Con V10, il click su una card preset invia Stop, SetAVTransportURI, Play, GetTransportInfo e polling `/now_playing`: la riproduzione avviene direttamente dalla Bose tramite UPnP AVTransport, senza AirPlay/Bluetooth e senza usare il browser come player audio. Serve che Mac/server e Bose siano sulla stessa LAN e che la porta UPnP `8091` della SoundTouch sia raggiungibile.
 
 ## Note SoundTouch
 
