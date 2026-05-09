@@ -981,3 +981,37 @@ pre {
 .stream-status.error {
   border-color: rgba(248, 113, 113, 0.45);
 }
+
+.upnp-playback-panel {
+  margin-top: 1rem;
+}
+
+.upnp-controls-grid,
+.upnp-result-panel {
+  display: grid;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.upnp-controls-grid {
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  align-items: start;
+}
+
+.upnp-controls-grid section {
+  display: grid;
+  gap: 0.7rem;
+  border: 1px solid rgba(125, 211, 252, 0.18);
+  border-radius: 0.9rem;
+  padding: 0.85rem;
+  background: rgba(2, 6, 23, 0.28);
+}
+
+.upnp-controls-grid select {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 0.85rem;
+  padding: 0.75rem 0.85rem;
+  color: #e0f2fe;
+  background: rgba(15, 23, 42, 0.86);
+}

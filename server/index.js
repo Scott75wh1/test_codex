@@ -14,6 +14,7 @@ loadLocalEnv();
 const app = express();
 const PORT = Number(process.env.PORT ?? 3001);
 const BOSE_PORT = 8090;
+const UPNP_AVTRANSPORT_PORT = 8091;
 const REQUEST_TIMEOUT_MS = Number(process.env.BOSE_REQUEST_TIMEOUT_MS ?? 6000);
 const ALLOWED_KEYS = new Set(['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN', 'PRESET_1', 'PRESET_2', 'PRESET_3', 'PRESET_4', 'PRESET_5', 'PRESET_6', 'ADD_FAVORITE', 'REMOVE_FAVORITE']);
 const KEY_SENDER = 'Gabbo';
@@ -124,6 +125,46 @@ function sanitizeIp(ip) {
 
 function soundTouchUrl(ip, endpoint) {
   return `http://${ip}:${BOSE_PORT}${endpoint}`;
+}
+
+function upnpUrl(ip, endpoint) {
+  return `http://${ip}:${UPNP_AVTRANSPORT_PORT}${endpoint}`;
+}
+
+function escapeXmlText(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function makeSetAvTransportUriSoap(streamUrl) {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
+  s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <InstanceID>0</InstanceID>
+      <CurrentURI>${escapeXmlText(streamUrl)}</CurrentURI>
+      <CurrentURIMetaData></CurrentURIMetaData>
+    </u:SetAVTransportURI>
+  </s:Body>
+</s:Envelope>`;
+}
+
+function makePlaySoap() {
+  return `<?xml version="1.0" encoding="utf-8"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
+  s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+      <InstanceID>0</InstanceID>
+      <Speed>1</Speed>
+    </u:Play>
+  </s:Body>
+</s:Envelope>`;
 }
 
 
@@ -332,6 +373,102 @@ async function fetchSoundTouch(ip, endpoint, options = {}) {
 
 function sendXml(res, result) {
   res.status(result.status).type(result.contentType).send(result.body);
+}
+
+async function postUpnpSoap(ip, soapAction, requestSoap) {
+  const targetIp = sanitizeIp(ip);
+  if (!targetIp) {
+    const error = new Error('Indirizzo IP Bose mancante o non valido.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const targetUrl = upnpUrl(targetIp, '/AVTransport/Control');
+
+  try {
+    const response = await fetch(targetUrl, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        'Content-Type': 'text/xml; charset="utf-8"',
+        SOAPAction: `"${soapAction}"`
+      },
+      body: requestSoap
+    });
+    const responseBody = await response.text();
+
+    return {
+      url: targetUrl,
+      soapAction,
+      requestSoap,
+      status: response.status,
+      ok: response.ok,
+      contentType: response.headers.get('content-type') ?? 'text/xml',
+      responseBody
+    };
+  } catch (error) {
+    if (error.name === 'AbortError') {
+      return {
+        url: targetUrl,
+        soapAction,
+        requestSoap,
+        status: 504,
+        ok: false,
+        contentType: 'text/plain',
+        responseBody: `Timeout dopo ${REQUEST_TIMEOUT_MS} ms verso UPnP AVTransport.`
+      };
+    }
+
+    return {
+      url: targetUrl,
+      soapAction,
+      requestSoap,
+      status: 502,
+      ok: false,
+      contentType: 'text/plain',
+      responseBody: error.message ?? 'Errore SOAP UPnP AVTransport.'
+    };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function fetchUpnpDescription(ip) {
+  const targetIp = sanitizeIp(ip);
+  if (!targetIp) {
+    const error = new Error('Indirizzo IP Bose mancante o non valido.');
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const attempts = ['/rootDesc.xml', '/'];
+  const results = [];
+
+  for (const endpoint of attempts) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    const targetUrl = upnpUrl(targetIp, endpoint);
+
+    try {
+      const response = await fetch(targetUrl, {
+        signal: controller.signal,
+        headers: { Accept: 'application/xml, text/xml, */*' }
+      });
+      const body = await response.text();
+      results.push({ endpoint, url: targetUrl, status: response.status, ok: response.ok, contentType: response.headers.get('content-type') ?? 'application/xml', body });
+      if (response.ok) {
+        return { ok: true, selectedEndpoint: endpoint, attempts: results };
+      }
+    } catch (error) {
+      results.push({ endpoint, url: targetUrl, status: error.name === 'AbortError' ? 504 : 502, ok: false, contentType: 'text/plain', body: error.name === 'AbortError' ? `Timeout dopo ${REQUEST_TIMEOUT_MS} ms.` : error.message });
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  }
+
+  return { ok: false, selectedEndpoint: null, attempts: results };
 }
 
 async function fetchSoundTouchExperimental(ip, endpoint) {
@@ -658,6 +795,43 @@ app.post('/api/stream-check', async (req, res) => {
     });
   } finally {
     clearTimeout(timeoutId);
+  }
+});
+
+app.get('/api/upnp/:ip/root-desc', async (req, res, next) => {
+  try {
+    res.json(await fetchUpnpDescription(req.params.ip));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/upnp/:ip/set-uri', async (req, res, next) => {
+  try {
+    const streamUrl = validateStreamUrl(String(req.body?.streamUrl ?? '').trim());
+    if (!streamUrl) {
+      return res.status(400).json({ error: 'streamUrl mancante.' });
+    }
+
+    const soapAction = 'urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI';
+    const requestSoap = makeSetAvTransportUriSoap(streamUrl);
+    res.status(200).json(await postUpnpSoap(req.params.ip, soapAction, requestSoap));
+  } catch (error) {
+    if (error instanceof TypeError || /streamUrl/.test(error.message ?? '')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return next(error);
+  }
+});
+
+app.post('/api/upnp/:ip/play', async (req, res, next) => {
+  try {
+    const soapAction = 'urn:schemas-upnp-org:service:AVTransport:1#Play';
+    const requestSoap = makePlaySoap();
+    res.status(200).json(await postUpnpSoap(req.params.ip, soapAction, requestSoap));
+  } catch (error) {
+    next(error);
   }
 });
 

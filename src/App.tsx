@@ -37,6 +37,43 @@ type StreamCheckResult = {
   error?: string;
 };
 
+type UpnpSoapResult = {
+  url: string;
+  soapAction: string;
+  requestSoap: string;
+  status: number;
+  ok: boolean;
+  contentType: string;
+  responseBody: string;
+};
+
+type UpnpRootDescAttempt = {
+  endpoint: string;
+  url: string;
+  status: number;
+  ok: boolean;
+  contentType: string;
+  body: string;
+};
+
+type UpnpRootDescResult = {
+  ok: boolean;
+  selectedEndpoint: string | null;
+  attempts: UpnpRootDescAttempt[];
+};
+
+type UpnpPlaybackLog = {
+  timestamp: string;
+  command: 'root-desc' | 'set-uri' | 'play' | 'set-uri-play';
+  presetId?: number;
+  streamUrl: string;
+  setUriResult?: UpnpSoapResult;
+  playResult?: UpnpSoapResult;
+  rootDescResult?: UpnpRootDescResult;
+  nowPlayingAfter: PresetLabPoll[];
+  outcome: string;
+};
+
 type DiscoveredDevice = {
   ip: string;
   status: ConnectionStatus;
@@ -550,6 +587,11 @@ export default function App() {
   const [replacementSavingId, setReplacementSavingId] = useState<number | null>(null);
   const [replacementStreamChecks, setReplacementStreamChecks] = useState<Record<number, StreamCheckResult>>({});
   const [replacementAudioUrl, setReplacementAudioUrl] = useState('');
+  const [selectedUpnpPresetId, setSelectedUpnpPresetId] = useState(2);
+  const [upnpStreamUrl, setUpnpStreamUrl] = useState('http://ice1.somafm.com/groovesalad-128-mp3');
+  const [upnpLoading, setUpnpLoading] = useState(false);
+  const [upnpLastResult, setUpnpLastResult] = useState<UpnpPlaybackLog | null>(null);
+  const [upnpHistory, setUpnpHistory] = useState<UpnpPlaybackLog[]>([]);
   const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
   const [technicalLogs, setTechnicalLogs] = useState<TechnicalLog[]>([
@@ -1546,6 +1588,134 @@ export default function App() {
     }, 0);
   }
 
+  function getSelectedUpnpPreset() {
+    return replacementPresets.find((preset) => preset.id === selectedUpnpPresetId) ?? replacementPresets[1] ?? replacementPresets[0] ?? null;
+  }
+
+  function selectUpnpPreset(id: number) {
+    setSelectedUpnpPresetId(id);
+    const preset = replacementPresets.find((item) => item.id === id);
+    if (preset?.streamUrl) {
+      setUpnpStreamUrl(preset.streamUrl);
+    }
+  }
+
+  async function pollUpnpNowPlayingAfterPlay(): Promise<PresetLabPoll[]> {
+    const polls: PresetLabPoll[] = [];
+    let elapsedMs = 0;
+    for (const delayMs of PRESET_LAB_POLL_DELAYS) {
+      await waitFor(delayMs - elapsedMs);
+      elapsedMs = delayMs;
+      polls.push(await fetchPresetLabNowPlaying(delayMs));
+    }
+
+    return polls;
+  }
+
+  async function fetchUpnpRootDesc() {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'UPnP rootDesc annullato: IP Bose mancante.'));
+      return;
+    }
+
+    setUpnpLoading(true);
+    const startedAt = new Date().toISOString();
+    try {
+      const response = await fetch(`${API_BASE}/upnp/${encodedIp}/root-desc`);
+      const rootDescResult = (await response.json()) as UpnpRootDescResult;
+      const log: UpnpPlaybackLog = {
+        timestamp: startedAt,
+        command: 'root-desc',
+        presetId: selectedUpnpPresetId,
+        streamUrl: upnpStreamUrl,
+        rootDescResult,
+        nowPlayingAfter: [],
+        outcome: rootDescResult.ok ? `UPnP description OK (${rootDescResult.selectedEndpoint})` : 'UPnP description non disponibile'
+      };
+      setUpnpLastResult(log);
+      setUpnpHistory((prev) => [log, ...prev].slice(0, 50));
+      appendLog(makeLog(rootDescResult.ok ? 'online' : 'offline', `UPnP rootDesc: ${log.outcome}`, boseIp));
+    } catch (error) {
+      appendLog(makeLog('offline', error instanceof Error ? error.message : 'UPnP rootDesc fallito.', boseIp));
+    } finally {
+      setUpnpLoading(false);
+    }
+  }
+
+  async function postUpnpAction(endpoint: 'set-uri' | 'play') {
+    const response = await fetch(`${API_BASE}/upnp/${encodedIp}/${endpoint}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: endpoint === 'set-uri' ? JSON.stringify({ streamUrl: upnpStreamUrl.trim() }) : '{}'
+    });
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload.error ?? `UPnP ${endpoint} fallito.`);
+    }
+
+    return payload as UpnpSoapResult;
+  }
+
+  async function runUpnpPlaybackTest(command: 'set-uri' | 'play' | 'set-uri-play') {
+    if (!canSend) {
+      appendLog(makeLog('offline', 'UPnP Playback Test annullato: IP Bose mancante.'));
+      return;
+    }
+
+    if (!upnpStreamUrl.trim() && command !== 'play') {
+      appendLog(makeLog('offline', 'UPnP Set URI annullato: stream URL mancante.'));
+      return;
+    }
+
+    setUpnpLoading(true);
+    const startedAt = new Date().toISOString();
+    const selectedPreset = getSelectedUpnpPreset();
+
+    try {
+      let setUriResult: UpnpSoapResult | undefined;
+      let playResult: UpnpSoapResult | undefined;
+      let nowPlayingAfter: PresetLabPoll[] = [];
+
+      if (command === 'set-uri' || command === 'set-uri-play') {
+        setUriResult = await postUpnpAction('set-uri');
+      }
+
+      if (command === 'play' || command === 'set-uri-play') {
+        playResult = await postUpnpAction('play');
+        nowPlayingAfter = await pollUpnpNowPlayingAfterPlay();
+      }
+
+      const ok = (setUriResult?.ok ?? true) && (playResult?.ok ?? true);
+      const log: UpnpPlaybackLog = {
+        timestamp: startedAt,
+        command,
+        presetId: selectedPreset?.id,
+        streamUrl: upnpStreamUrl,
+        setUriResult,
+        playResult,
+        nowPlayingAfter,
+        outcome: ok ? 'SOAP inviato: verificare now_playing/audio' : 'SOAP HTTP error o fault: vedi response body'
+      };
+      setUpnpLastResult(log);
+      setUpnpHistory((prev) => [log, ...prev].slice(0, 50));
+      appendLog(makeLog(ok ? 'online' : 'offline', `UPnP ${command}: ${log.outcome}`, boseIp));
+    } catch (error) {
+      const log: UpnpPlaybackLog = {
+        timestamp: startedAt,
+        command,
+        presetId: selectedPreset?.id,
+        streamUrl: upnpStreamUrl,
+        nowPlayingAfter: [],
+        outcome: error instanceof Error ? error.message : 'UPnP Playback Test fallito.'
+      };
+      setUpnpLastResult(log);
+      setUpnpHistory((prev) => [log, ...prev].slice(0, 50));
+      appendLog(makeLog('offline', log.outcome, boseIp));
+    } finally {
+      setUpnpLoading(false);
+    }
+  }
+
   function getPresetDiagnosis() {
     const presetKeyExperiments = presetLabHistory.filter((item) => /^PRESET_[1-6]$/.test(item.command));
     const latestPresetExperiment = presetKeyExperiments[0];
@@ -2187,6 +2357,122 @@ export default function App() {
               <strong>Future local bridge</strong>
               <p>Possibile bridge locale futuro per servire stream compatibili alla rete, senza promettere oggi playback diretto Bose.</p>
             </article>
+          </div>
+        </div>
+      </section>
+
+      <section className="panel upnp-playback-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">V9 UPnP AVTransport Playback Test</p>
+            <h2>UPnP Playback Test</h2>
+          </div>
+          <span>SetAVTransportURI + Play su porta 8091</span>
+        </div>
+        <p className="hint">
+          Test mirato per capire se la SoundTouch 30 può riprodurre una web radio direttamente via UPnP AVTransport, senza AirPlay/Bluetooth e senza player browser.
+        </p>
+
+        <div className="upnp-controls-grid">
+          <section>
+            <h3>Preset replacement sorgente</h3>
+            <label className="field-label" htmlFor="upnp-preset-select">Scegli preset replacement</label>
+            <select id="upnp-preset-select" value={selectedUpnpPresetId} onChange={(event) => selectUpnpPreset(Number(event.target.value))}>
+              {replacementPresets.map((preset) => (
+                <option key={preset.id} value={preset.id}>Preset {preset.id} · {preset.name}</option>
+              ))}
+            </select>
+            <label className="field-label" htmlFor="upnp-stream-url">Stream URL</label>
+            <input
+              id="upnp-stream-url"
+              value={upnpStreamUrl}
+              onChange={(event) => setUpnpStreamUrl(event.target.value)}
+              placeholder="http://ice1.somafm.com/groovesalad-128-mp3"
+            />
+            <p className="hint">Primo stream di test: http://ice1.somafm.com/groovesalad-128-mp3</p>
+          </section>
+
+          <section>
+            <h3>Comandi AVTransport</h3>
+            <div className="template-row">
+              <button type="button" onClick={() => void fetchUpnpRootDesc()} disabled={!canSend || upnpLoading}>
+                Test rootDesc.xml / 8091
+              </button>
+              <button type="button" onClick={() => void runUpnpPlaybackTest('set-uri')} disabled={!canSend || upnpLoading || !upnpStreamUrl.trim()}>
+                Set URI
+              </button>
+              <button type="button" onClick={() => void runUpnpPlaybackTest('play')} disabled={!canSend || upnpLoading}>
+                Play on Bose
+              </button>
+              <button type="button" onClick={() => void runUpnpPlaybackTest('set-uri-play')} disabled={!canSend || upnpLoading || !upnpStreamUrl.trim()}>
+                Set URI + Play
+              </button>
+            </div>
+            <p className="hint">Dopo Play viene interrogato /now_playing a 500ms, 1500ms e 3000ms.</p>
+          </section>
+        </div>
+
+        <div className="upnp-result-panel">
+          <h3>Risultato UPnP</h3>
+          {upnpLastResult ? (
+            <div className="select-verification">
+              <div className={`verification-badge ${upnpLastResult.outcome.includes('error') || upnpLastResult.outcome.includes('fallito') || upnpLastResult.outcome.includes('non disponibile') ? 'error' : 'pending'}`}>
+                {upnpLastResult.command} · {upnpLastResult.outcome}
+              </div>
+              <div className="realtime-grid">
+                <article><span>Preset</span><strong>{upnpLastResult.presetId ?? 'n/d'}</strong></article>
+                <article><span>Stream</span><strong>{upnpLastResult.streamUrl || 'n/d'}</strong></article>
+                <article><span>Set URI HTTP</span><strong>{upnpLastResult.setUriResult?.status ?? 'n/d'}</strong></article>
+                <article><span>Play HTTP</span><strong>{upnpLastResult.playResult?.status ?? 'n/d'}</strong></article>
+              </div>
+
+              {upnpLastResult.rootDescResult ? (
+                <details open>
+                  <summary>UPnP rootDesc / probe 8091</summary>
+                  <pre>{JSON.stringify(upnpLastResult.rootDescResult, null, 2)}</pre>
+                </details>
+              ) : null}
+
+              <div className="experimental-grid">
+                <section>
+                  <h4>Request SOAP</h4>
+                  <pre>{upnpLastResult.setUriResult?.requestSoap ? formatXml(upnpLastResult.setUriResult.requestSoap) : upnpLastResult.playResult?.requestSoap ? formatXml(upnpLastResult.playResult.requestSoap) : 'n/d'}</pre>
+                  <h4>SOAPAction</h4>
+                  <pre>{upnpLastResult.setUriResult?.soapAction ?? upnpLastResult.playResult?.soapAction ?? 'n/d'}</pre>
+                </section>
+                <section>
+                  <h4>Response SOAP / errori</h4>
+                  <pre>{upnpLastResult.setUriResult ? JSON.stringify({ status: upnpLastResult.setUriResult.status, ok: upnpLastResult.setUriResult.ok, contentType: upnpLastResult.setUriResult.contentType, body: upnpLastResult.setUriResult.responseBody }, null, 2) : upnpLastResult.playResult ? JSON.stringify({ status: upnpLastResult.playResult.status, ok: upnpLastResult.playResult.ok, contentType: upnpLastResult.playResult.contentType, body: upnpLastResult.playResult.responseBody }, null, 2) : 'n/d'}</pre>
+                </section>
+              </div>
+
+              {upnpLastResult.setUriResult && upnpLastResult.playResult ? (
+                <details>
+                  <summary>Response Set URI + Play completa</summary>
+                  <pre>{JSON.stringify({ setUri: upnpLastResult.setUriResult, play: upnpLastResult.playResult }, null, 2)}</pre>
+                </details>
+              ) : null}
+
+              <h4>now_playing dopo comando</h4>
+              <div className="poll-grid">
+                {upnpLastResult.nowPlayingAfter.length === 0 ? <p className="hint">Nessun polling now_playing per questo comando.</p> : upnpLastResult.nowPlayingAfter.map((poll) => (
+                  <details key={`${upnpLastResult.timestamp}-${poll.delayMs}`} open={poll.delayMs === 3000}>
+                    <summary>{poll.delayMs}ms · HTTP {poll.httpStatus ?? 'errore'} · source {poll.parsed.source ?? 'n/d'} · play {poll.parsed.playStatus ?? 'n/d'}</summary>
+                    <pre>{formatXml(poll.nowPlayingXml)}</pre>
+                  </details>
+                ))}
+              </div>
+            </div>
+          ) : <p className="hint">Nessun test UPnP eseguito.</p>}
+
+          <h3>Storico UPnP</h3>
+          <div className="select-history-list">
+            {upnpHistory.length === 0 ? <p className="hint">Nessuno storico disponibile.</p> : upnpHistory.map((item, index) => (
+              <details key={`${item.timestamp}-${index}`}>
+                <summary>{new Date(item.timestamp).toLocaleTimeString('it-IT')} · {item.command} · {item.outcome}</summary>
+                <pre>{JSON.stringify(item, null, 2)}</pre>
+              </details>
+            ))}
           </div>
         </div>
       </section>
