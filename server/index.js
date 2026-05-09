@@ -140,31 +140,55 @@ function escapeXmlText(value) {
     .replace(/'/g, '&apos;');
 }
 
-function makeSetAvTransportUriSoap(streamUrl) {
+function makeDidlLiteMetadata(streamUrl, title = 'Groove Salad') {
+  return `<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/"
+             xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"
+             xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">
+  <item id="1" parentID="0" restricted="1">
+    <dc:title>${escapeXmlText(title)}</dc:title>
+    <upnp:class>object.item.audioItem.audioBroadcast</upnp:class>
+    <res protocolInfo="http-get:*:audio/mpeg:*">${escapeXmlText(streamUrl)}</res>
+  </item>
+</DIDL-Lite>`;
+}
+
+function makeUpnpEnvelope(actionName, innerXml) {
   return `<?xml version="1.0" encoding="utf-8"?>
 <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
   s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
   <s:Body>
-    <u:SetAVTransportURI xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-      <InstanceID>0</InstanceID>
-      <CurrentURI>${escapeXmlText(streamUrl)}</CurrentURI>
-      <CurrentURIMetaData></CurrentURIMetaData>
-    </u:SetAVTransportURI>
+    <u:${actionName} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
+${innerXml}
+    </u:${actionName}>
   </s:Body>
 </s:Envelope>`;
 }
 
+function makeSetAvTransportUriSoap(streamUrl, metadata = '') {
+  return makeUpnpEnvelope('SetAVTransportURI', `      <InstanceID>0</InstanceID>
+      <CurrentURI>${escapeXmlText(streamUrl)}</CurrentURI>
+      <CurrentURIMetaData>${escapeXmlText(metadata)}</CurrentURIMetaData>`);
+}
+
 function makePlaySoap() {
-  return `<?xml version="1.0" encoding="utf-8"?>
-<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"
-  s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
-  <s:Body>
-    <u:Play xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">
-      <InstanceID>0</InstanceID>
-      <Speed>1</Speed>
-    </u:Play>
-  </s:Body>
-</s:Envelope>`;
+  return makeUpnpEnvelope('Play', `      <InstanceID>0</InstanceID>
+      <Speed>1</Speed>`);
+}
+
+function makeStopSoap() {
+  return makeUpnpEnvelope('Stop', '      <InstanceID>0</InstanceID>');
+}
+
+function makeGetMediaInfoSoap() {
+  return makeUpnpEnvelope('GetMediaInfo', '      <InstanceID>0</InstanceID>');
+}
+
+function makeGetTransportInfoSoap() {
+  return makeUpnpEnvelope('GetTransportInfo', '      <InstanceID>0</InstanceID>');
+}
+
+function makeGetPositionInfoSoap() {
+  return makeUpnpEnvelope('GetPositionInfo', '      <InstanceID>0</InstanceID>');
 }
 
 
@@ -813,15 +837,55 @@ app.post('/api/upnp/:ip/set-uri', async (req, res, next) => {
       return res.status(400).json({ error: 'streamUrl mancante.' });
     }
 
+    const mode = String(req.body?.mode ?? 'direct').toLowerCase();
+    const metadata = mode === 'didl'
+      ? makeDidlLiteMetadata(streamUrl, String(req.body?.title ?? 'Groove Salad'))
+      : '';
     const soapAction = 'urn:schemas-upnp-org:service:AVTransport:1#SetAVTransportURI';
-    const requestSoap = makeSetAvTransportUriSoap(streamUrl);
-    res.status(200).json(await postUpnpSoap(req.params.ip, soapAction, requestSoap));
+    const requestSoap = makeSetAvTransportUriSoap(streamUrl, metadata);
+    res.status(200).json({ mode, metadata, ...(await postUpnpSoap(req.params.ip, soapAction, requestSoap)) });
   } catch (error) {
     if (error instanceof TypeError || /streamUrl/.test(error.message ?? '')) {
       return res.status(400).json({ error: error.message });
     }
 
     return next(error);
+  }
+});
+
+app.post('/api/upnp/:ip/stop', async (req, res, next) => {
+  try {
+    const soapAction = 'urn:schemas-upnp-org:service:AVTransport:1#Stop';
+    res.status(200).json(await postUpnpSoap(req.params.ip, soapAction, makeStopSoap()));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/upnp/:ip/get-media-info', async (req, res, next) => {
+  try {
+    const soapAction = 'urn:schemas-upnp-org:service:AVTransport:1#GetMediaInfo';
+    res.status(200).json(await postUpnpSoap(req.params.ip, soapAction, makeGetMediaInfoSoap()));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/upnp/:ip/get-transport-info', async (req, res, next) => {
+  try {
+    const soapAction = 'urn:schemas-upnp-org:service:AVTransport:1#GetTransportInfo';
+    res.status(200).json(await postUpnpSoap(req.params.ip, soapAction, makeGetTransportInfoSoap()));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/upnp/:ip/get-position-info', async (req, res, next) => {
+  try {
+    const soapAction = 'urn:schemas-upnp-org:service:AVTransport:1#GetPositionInfo';
+    res.status(200).json(await postUpnpSoap(req.params.ip, soapAction, makeGetPositionInfoSoap()));
+  } catch (error) {
+    next(error);
   }
 });
 
