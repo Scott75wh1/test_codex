@@ -14,6 +14,8 @@ const PORT = Number(process.env.PORT ?? 3001);
 const BOSE_PORT = 8090;
 const REQUEST_TIMEOUT_MS = Number(process.env.BOSE_REQUEST_TIMEOUT_MS ?? 6000);
 const ALLOWED_KEYS = new Set(['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN']);
+const KEY_SENDER = 'Gabbo';
+const KEY_RELEASE_DELAY_MS = 100;
 
 app.use((req, res, next) => {
   const allowedOrigin = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173';
@@ -124,33 +126,66 @@ function sendXml(res, result) {
   res.status(result.status).type(result.contentType).send(result.body);
 }
 
-function xmlEscape(value) {
-  return String(value)
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;')
-    .replaceAll("'", '&apos;');
+function wait(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function postXmlToSoundTouch(ip, endpoint, xmlBody) {
+  console.log(`[SoundTouch POST ${endpoint}] XML body: ${xmlBody}`);
+
+  try {
+    return await fetchSoundTouch(ip, endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/xml',
+        Accept: 'application/xml'
+      },
+      body: xmlBody
+    });
+  } catch (error) {
+    error.requestXml = xmlBody;
+    throw error;
+  }
 }
 
 async function pressAndReleaseKey(ip, key) {
-  const escapedKey = xmlEscape(key);
-  const makePayload = (state) => `<key state="${state}" sender="SoundTouchRadioBridge">${escapedKey}</key>`;
+  const pressXml = `<key state="press" sender="${KEY_SENDER}">${key}</key>`;
+  const releaseXml = `<key state="release" sender="${KEY_SENDER}">${key}</key>`;
 
-  const press = await fetchSoundTouch(ip, '/key', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/xml' },
-    body: makePayload('press')
-  });
+  const requestXmlSequence = [pressXml, releaseXml];
 
-  await fetchSoundTouch(ip, '/key', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/xml' },
-    body: makePayload('release')
-  });
+  try {
+    const press = await postXmlToSoundTouch(ip, '/key', pressXml);
+    await wait(KEY_RELEASE_DELAY_MS);
+    const release = await postXmlToSoundTouch(ip, '/key', releaseXml);
 
-  return press;
+    return {
+      requestXmlSequence,
+      boseResponse: { press, release }
+    };
+  } catch (error) {
+    error.requestXmlSequence = requestXmlSequence;
+    throw error;
+  }
 }
+
+
+function sendBridgePostError(res, error) {
+  const statusCode = error.statusCode ?? 502;
+  res.status(statusCode).json({
+    error: error.message ?? 'Errore proxy SoundTouch.',
+    details: error.payload,
+    requestXml: error.requestXml,
+    requestXmlSequence: error.requestXmlSequence,
+    boseResponse: {
+      status: error.statusCode,
+      body: error.payload
+    }
+  });
+}
+
 
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, name: 'SoundTouch Radio Bridge' });
@@ -205,14 +240,18 @@ app.post('/api/bose/:ip/volume', async (req, res, next) => {
       return res.status(400).json({ error: 'Il volume deve essere un intero tra 0 e 100.' });
     }
 
-    const result = await fetchSoundTouch(req.params.ip, '/volume', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/xml' },
-      body: `<volume>${volume}</volume>`
-    });
+    const requestXml = `<volume>${volume}</volume>`;
+    const result = await postXmlToSoundTouch(req.params.ip, '/volume', requestXml);
 
-    return sendXml(res, result);
+    return res.status(result.status).json({
+      requestXml,
+      boseResponse: result
+    });
   } catch (error) {
+    if (error.requestXml) {
+      return sendBridgePostError(res, error);
+    }
+
     return next(error);
   }
 });
@@ -224,8 +263,14 @@ app.post('/api/bose/:ip/key', async (req, res, next) => {
       return res.status(400).json({ error: 'Key non supportata.', allowedKeys: [...ALLOWED_KEYS] });
     }
 
-    return sendXml(res, await pressAndReleaseKey(req.params.ip, key));
+    const result = await pressAndReleaseKey(req.params.ip, key);
+
+    return res.status(result.boseResponse.release.status).json(result);
   } catch (error) {
+    if (error.requestXmlSequence) {
+      return sendBridgePostError(res, error);
+    }
+
     return next(error);
   }
 });

@@ -82,7 +82,7 @@ curl http://localhost:3001/api/bose/192.168.1.50/sources
 curl http://localhost:3001/api/bose/192.168.1.50/volume
 ```
 
-Impostazione volume:
+Impostazione volume tramite dashboard/backend locale:
 
 ```bash
 curl -X POST http://localhost:3001/api/bose/192.168.1.50/volume \
@@ -90,12 +90,34 @@ curl -X POST http://localhost:3001/api/bose/192.168.1.50/volume \
   -d '{"volume":35}'
 ```
 
-Invio tasto:
+Invio tasto tramite dashboard/backend locale:
 
 ```bash
 curl -X POST http://localhost:3001/api/bose/192.168.1.50/key \
   -H 'Content-Type: application/json' \
   -d '{"key":"PLAY_PAUSE"}'
+```
+
+## Test curl diretti verso Bose
+
+Per isolare eventuali problemi del dispositivo, puoi inviare XML puro direttamente al Bose sostituendo `BOSE_IP` con l'indirizzo reale:
+
+```bash
+curl -X POST "http://BOSE_IP:8090/key" \
+  -H "Content-Type: application/xml" \
+  -d '<key state="press" sender="Gabbo">PLAY_PAUSE</key>'
+```
+
+```bash
+curl -X POST "http://BOSE_IP:8090/key" \
+  -H "Content-Type: application/xml" \
+  -d '<key state="release" sender="Gabbo">PLAY_PAUSE</key>'
+```
+
+```bash
+curl -X POST "http://BOSE_IP:8090/volume" \
+  -H "Content-Type: application/xml" \
+  -d '<volume>30</volume>'
 ```
 
 ## Note SoundTouch

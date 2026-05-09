@@ -39,10 +39,36 @@ function makeInitialResponse(): ApiResponse {
   };
 }
 
+function formatBridgePostResponse(payload: unknown) {
+  if (!payload || typeof payload !== 'object') {
+    return JSON.stringify(payload, null, 2);
+  }
+
+  const data = payload as {
+    requestXml?: string;
+    requestXmlSequence?: string[];
+    boseResponse?: unknown;
+  };
+
+  if (!data.requestXml && !data.requestXmlSequence) {
+    return JSON.stringify(payload, null, 2);
+  }
+
+  const requestXml = data.requestXmlSequence?.join('\n') ?? data.requestXml;
+
+  return [
+    'Request XML inviata:',
+    requestXml,
+    '',
+    'Response Bose ricevuta:',
+    JSON.stringify(data.boseResponse, null, 2)
+  ].join('\n');
+}
+
 async function readResponseBody(response: Response) {
   const contentType = response.headers.get('content-type') ?? '';
   if (contentType.includes('application/json')) {
-    return JSON.stringify(await response.json(), null, 2);
+    return formatBridgePostResponse(await response.json());
   }
 
   return response.text();
