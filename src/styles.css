@@ -886,3 +886,98 @@ pre {
   color: #fecaca;
   background: rgba(127, 29, 29, 0.36);
 }
+
+.replacement-presets-panel {
+  margin-top: 1rem;
+}
+
+.replacement-audio-row,
+.bose-output-strategy {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.replacement-presets-grid,
+.strategy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+  gap: 1rem;
+  margin-top: 1rem;
+}
+
+.replacement-presets-grid article,
+.strategy-grid article {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(45, 212, 191, 0.22);
+  border-radius: 1rem;
+  padding: 0.9rem;
+  background: rgba(2, 6, 23, 0.32);
+}
+
+.replacement-presets-grid article.disabled {
+  opacity: 0.72;
+}
+
+.replacement-preset-heading,
+.replacement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.replacement-preset-heading strong,
+.strategy-grid strong {
+  color: #67e8f9;
+}
+
+.replacement-preset-heading label {
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+  color: #cbd5e1;
+  font-size: 0.9rem;
+}
+
+.replacement-presets-grid img {
+  max-width: 5rem;
+  max-height: 5rem;
+  border-radius: 0.75rem;
+  object-fit: contain;
+}
+
+.replacement-presets-grid textarea {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 0.85rem;
+  padding: 0.7rem;
+  color: #dbeafe;
+  background: rgba(2, 6, 23, 0.62);
+  resize: vertical;
+}
+
+.stream-status {
+  display: grid;
+  gap: 0.15rem;
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  border-radius: 0.75rem;
+  padding: 0.65rem;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.stream-status span,
+.stream-status small,
+.strategy-grid p {
+  color: #cbd5e1;
+}
+
+.stream-status.ok {
+  border-color: rgba(52, 211, 153, 0.45);
+}
+
+.stream-status.error {
+  border-color: rgba(248, 113, 113, 0.45);
+}

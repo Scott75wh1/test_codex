@@ -1,6 +1,6 @@
 import express from 'express';
 import WebSocket from 'ws';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,13 +18,61 @@ const REQUEST_TIMEOUT_MS = Number(process.env.BOSE_REQUEST_TIMEOUT_MS ?? 6000);
 const ALLOWED_KEYS = new Set(['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN', 'PRESET_1', 'PRESET_2', 'PRESET_3', 'PRESET_4', 'PRESET_5', 'PRESET_6', 'ADD_FAVORITE', 'REMOVE_FAVORITE']);
 const KEY_SENDER = 'Gabbo';
 const KEY_RELEASE_DELAY_MS = 100;
+const REPLACEMENT_PRESET_COUNT = 6;
+
+function replacementPresetsPath() {
+  return path.join(__dirname, '..', 'data', 'replacement-presets.json');
+}
+
+function normalizeReplacementPreset(preset, index) {
+  const fallbackId = index + 1;
+  const id = Number(preset?.id ?? fallbackId);
+
+  return {
+    id: Number.isInteger(id) && id >= 1 && id <= REPLACEMENT_PRESET_COUNT ? id : fallbackId,
+    name: String(preset?.name ?? `Preset ${fallbackId}`).trim() || `Preset ${fallbackId}`,
+    streamUrl: String(preset?.streamUrl ?? '').trim(),
+    logoUrl: String(preset?.logoUrl ?? '').trim(),
+    notes: String(preset?.notes ?? '').trim(),
+    enabled: Boolean(preset?.enabled)
+  };
+}
+
+async function readReplacementPresets() {
+  const raw = await readFile(replacementPresetsPath(), 'utf8');
+  const parsed = JSON.parse(raw);
+  const byId = new Map((Array.isArray(parsed) ? parsed : []).map((preset, index) => {
+    const normalized = normalizeReplacementPreset(preset, index);
+    return [normalized.id, normalized];
+  }));
+
+  return Array.from({ length: REPLACEMENT_PRESET_COUNT }, (_, index) => {
+    const id = index + 1;
+    return byId.get(id) ?? normalizeReplacementPreset({ id, name: `Preset ${id}`, enabled: false }, index);
+  });
+}
+
+async function writeReplacementPresets(presets) {
+  await writeFile(replacementPresetsPath(), `${JSON.stringify(presets, null, 2)}\n`, 'utf8');
+}
+
+function validateStreamUrl(url) {
+  if (!url) return '';
+  const parsed = new URL(url);
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error('streamUrl deve usare protocollo http o https.');
+  }
+
+  return parsed.toString();
+}
+
 
 app.use((req, res, next) => {
   const allowedOrigin = process.env.CLIENT_ORIGIN ?? 'http://localhost:5173';
   res.header('Access-Control-Allow-Origin', allowedOrigin);
   res.header('Vary', 'Origin');
   res.header('Access-Control-Allow-Headers', 'Content-Type');
-  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS');
 
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -532,6 +580,84 @@ app.get('/api/radios', async (_req, res, next) => {
     res.json(radios);
   } catch (error) {
     next(error);
+  }
+});
+
+app.get('/api/replacement-presets', async (_req, res, next) => {
+  try {
+    res.json(await readReplacementPresets());
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.put('/api/replacement-presets/:id', async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1 || id > REPLACEMENT_PRESET_COUNT) {
+      return res.status(400).json({ error: 'ID preset non valido. Usa un valore da 1 a 6.' });
+    }
+
+    const presets = await readReplacementPresets();
+    const index = id - 1;
+    const streamUrl = validateStreamUrl(String(req.body?.streamUrl ?? '').trim());
+    const nextPreset = normalizeReplacementPreset({
+      ...presets[index],
+      ...req.body,
+      id,
+      streamUrl
+    }, index);
+    presets[index] = nextPreset;
+    await writeReplacementPresets(presets);
+
+    return res.json(nextPreset);
+  } catch (error) {
+    if (error instanceof TypeError || /streamUrl/.test(error.message ?? '')) {
+      return res.status(400).json({ error: error.message });
+    }
+
+    return next(error);
+  }
+});
+
+app.post('/api/stream-check', async (req, res) => {
+  const streamUrl = String(req.body?.streamUrl ?? '').trim();
+  if (!streamUrl) {
+    return res.status(400).json({ ok: false, error: 'streamUrl mancante.' });
+  }
+
+  let parsedUrl;
+  try {
+    parsedUrl = validateStreamUrl(streamUrl);
+  } catch (error) {
+    return res.status(400).json({ ok: false, error: error.message });
+  }
+
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+
+  try {
+    let response = await fetch(parsedUrl, { method: 'HEAD', signal: controller.signal });
+    if (response.status === 405 || response.status === 403) {
+      response = await fetch(parsedUrl, { method: 'GET', signal: controller.signal, headers: { Range: 'bytes=0-0' } });
+    }
+
+    return res.json({
+      ok: response.ok,
+      status: response.status,
+      mimeType: response.headers.get('content-type') ?? null,
+      contentLength: response.headers.get('content-length') ?? null,
+      durationMs: Date.now() - startedAt
+    });
+  } catch (error) {
+    return res.status(error.name === 'AbortError' ? 504 : 502).json({
+      ok: false,
+      error: error.name === 'AbortError' ? `Timeout dopo ${REQUEST_TIMEOUT_MS} ms.` : error.message,
+      durationMs: Date.now() - startedAt
+    });
+  } finally {
+    clearTimeout(timeoutId);
   }
 });
 

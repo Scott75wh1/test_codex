@@ -19,6 +19,24 @@ type Radio = {
   streamUrl: string;
 };
 
+type ReplacementPreset = {
+  id: number;
+  name: string;
+  streamUrl: string;
+  logoUrl?: string;
+  notes: string;
+  enabled: boolean;
+};
+
+type StreamCheckResult = {
+  ok: boolean;
+  status?: number;
+  mimeType?: string | null;
+  contentLength?: string | null;
+  durationMs?: number;
+  error?: string;
+};
+
 type DiscoveredDevice = {
   ip: string;
   status: ConnectionStatus;
@@ -527,6 +545,11 @@ export default function App() {
   const [volume, setVolume] = useState(30);
   const [response, setResponse] = useState<ApiResponse>(() => makeInitialResponse());
   const [radios, setRadios] = useState<Radio[]>([]);
+  const [replacementPresets, setReplacementPresets] = useState<ReplacementPreset[]>([]);
+  const [replacementLoading, setReplacementLoading] = useState(false);
+  const [replacementSavingId, setReplacementSavingId] = useState<number | null>(null);
+  const [replacementStreamChecks, setReplacementStreamChecks] = useState<Record<number, StreamCheckResult>>({});
+  const [replacementAudioUrl, setReplacementAudioUrl] = useState('');
   const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle');
   const [technicalLogs, setTechnicalLogs] = useState<TechnicalLog[]>([
@@ -566,6 +589,7 @@ export default function App() {
   const lastRealtimeErrorRawRef = useRef<string | null>(null);
   const realtimeEventsRef = useRef<RealtimeEvent[]>([]);
   const browserAudioRef = useRef<HTMLAudioElement | null>(null);
+  const replacementAudioRef = useRef<HTMLAudioElement | null>(null);
   const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
@@ -575,6 +599,10 @@ export default function App() {
       .then((res) => res.json())
       .then(setRadios)
       .catch(() => setRadios([]));
+  }, []);
+
+  useEffect(() => {
+    void loadReplacementPresets();
   }, []);
 
   useEffect(() => () => {
@@ -1440,6 +1468,84 @@ export default function App() {
     );
   }
 
+  async function loadReplacementPresets() {
+    setReplacementLoading(true);
+    try {
+      const response = await fetch(`${API_BASE}/replacement-presets`);
+      const presets = (await response.json()) as ReplacementPreset[];
+      setReplacementPresets(presets);
+    } catch (error) {
+      appendLog(makeLog('offline', error instanceof Error ? error.message : 'Caricamento replacement presets fallito.'));
+    } finally {
+      setReplacementLoading(false);
+    }
+  }
+
+  function updateReplacementPreset(id: number, patch: Partial<ReplacementPreset>) {
+    setReplacementPresets((prev) => prev.map((preset) => preset.id === id ? { ...preset, ...patch } : preset));
+  }
+
+  async function saveReplacementPreset(preset: ReplacementPreset) {
+    setReplacementSavingId(preset.id);
+    try {
+      const response = await fetch(`${API_BASE}/replacement-presets/${preset.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(preset)
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.error ?? `Salvataggio preset ${preset.id} fallito.`);
+      }
+
+      updateReplacementPreset(preset.id, payload as ReplacementPreset);
+      appendLog(makeLog('online', `Replacement preset ${preset.id} salvato nel JSON locale.`));
+    } catch (error) {
+      appendLog(makeLog('offline', error instanceof Error ? error.message : `Salvataggio preset ${preset.id} fallito.`));
+    } finally {
+      setReplacementSavingId(null);
+    }
+  }
+
+  async function checkReplacementStream(preset: ReplacementPreset) {
+    if (!preset.streamUrl.trim()) {
+      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: 'streamUrl mancante.' } }));
+      return;
+    }
+
+    setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: 'verifica in corso…' } }));
+    try {
+      const response = await fetch(`${API_BASE}/stream-check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ streamUrl: preset.streamUrl })
+      });
+      const result = (await response.json()) as StreamCheckResult;
+      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: result }));
+      appendLog(makeLog(result.ok ? 'online' : 'offline', `Stream replacement preset ${preset.id}: ${result.ok ? 'raggiungibile' : result.error ?? `HTTP ${result.status ?? 'n/d'}`}`));
+    } catch (error) {
+      const result = { ok: false, error: error instanceof Error ? error.message : 'Verifica stream fallita.' };
+      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: result }));
+      appendLog(makeLog('offline', result.error));
+    }
+  }
+
+  function testReplacementStreamInBrowser(preset: ReplacementPreset) {
+    const streamUrl = preset.streamUrl.trim();
+    if (!streamUrl) {
+      setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: 'streamUrl mancante.' } }));
+      return;
+    }
+
+    setReplacementAudioUrl(streamUrl);
+    void checkReplacementStream(preset);
+    window.setTimeout(() => {
+      void replacementAudioRef.current?.play().catch((error) => {
+        setReplacementStreamChecks((prev) => ({ ...prev, [preset.id]: { ok: false, error: error instanceof Error ? error.message : 'Playback browser non avviato.' } }));
+      });
+    }, 0);
+  }
+
   function getPresetDiagnosis() {
     const presetKeyExperiments = presetLabHistory.filter((item) => /^PRESET_[1-6]$/.test(item.command));
     const latestPresetExperiment = presetKeyExperiments[0];
@@ -1983,6 +2089,104 @@ export default function App() {
                 <pre>{JSON.stringify(item, null, 2)}</pre>
               </details>
             ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="panel replacement-presets-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">V8 Replacement Radio Presets MVP</p>
+            <h2>Replacement Presets</h2>
+          </div>
+          <span>preset radio gestiti dall’app</span>
+        </div>
+        <p className="hint">
+          I preset Bose legacy rimangono diagnostici: questa sezione usa un JSON locale e un player browser per diventare il nuovo pannello preset radio. Non promette ancora playback diretto sulla cassa Bose.
+        </p>
+
+        <div className="replacement-audio-row">
+          <audio ref={replacementAudioRef} controls src={replacementAudioUrl} className="browser-audio" />
+          <button type="button" onClick={() => void loadReplacementPresets()} disabled={replacementLoading}>
+            {replacementLoading ? 'Ricarico preset…' : 'Ricarica JSON locale'}
+          </button>
+        </div>
+
+        <div className="replacement-presets-grid">
+          {replacementPresets.map((preset) => {
+            const streamCheck = replacementStreamChecks[preset.id];
+
+            return (
+              <article key={preset.id} className={!preset.enabled ? 'disabled' : ''}>
+                <div className="replacement-preset-heading">
+                  <strong>Preset {preset.id}</strong>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={preset.enabled}
+                      onChange={(event) => updateReplacementPreset(preset.id, { enabled: event.target.checked })}
+                    />
+                    enabled
+                  </label>
+                </div>
+                {preset.logoUrl ? <img src={preset.logoUrl} alt="" /> : null}
+                <label className="field-label" htmlFor={`replacement-name-${preset.id}`}>Nome</label>
+                <input
+                  id={`replacement-name-${preset.id}`}
+                  value={preset.name}
+                  onChange={(event) => updateReplacementPreset(preset.id, { name: event.target.value })}
+                />
+                <label className="field-label" htmlFor={`replacement-stream-${preset.id}`}>Stream URL</label>
+                <input
+                  id={`replacement-stream-${preset.id}`}
+                  value={preset.streamUrl}
+                  onChange={(event) => updateReplacementPreset(preset.id, { streamUrl: event.target.value })}
+                  placeholder="https://example.com/live.mp3"
+                />
+                <label className="field-label" htmlFor={`replacement-notes-${preset.id}`}>Note</label>
+                <textarea
+                  id={`replacement-notes-${preset.id}`}
+                  value={preset.notes}
+                  onChange={(event) => updateReplacementPreset(preset.id, { notes: event.target.value })}
+                  rows={3}
+                />
+                <div className="replacement-actions">
+                  <button type="button" onClick={() => void saveReplacementPreset(preset)} disabled={replacementSavingId === preset.id}>
+                    {replacementSavingId === preset.id ? 'Salvataggio…' : 'Salva'}
+                  </button>
+                  <button type="button" onClick={() => testReplacementStreamInBrowser(preset)} disabled={!preset.streamUrl.trim()}>
+                    Test stream nel browser
+                  </button>
+                </div>
+                <div className={`stream-status ${streamCheck?.ok ? 'ok' : streamCheck ? 'error' : 'idle'}`}>
+                  <span>Stato stream</span>
+                  <strong>{streamCheck ? (streamCheck.ok ? 'raggiungibile' : 'errore stream') : 'non testato'}</strong>
+                  <small>{streamCheck?.mimeType ? `MIME: ${streamCheck.mimeType}` : streamCheck?.error ?? (streamCheck?.status ? `HTTP ${streamCheck.status}` : 'MIME type n/d')}</small>
+                </div>
+              </article>
+            );
+          })}
+        </div>
+
+        <div className="bose-output-strategy">
+          <h3>Bose Output Strategy</h3>
+          <div className="strategy-grid">
+            <article>
+              <strong>AirPlay fallback</strong>
+              <p>Usare il browser/dispositivo come sorgente e inviare l’audio alla SoundTouch via AirPlay quando disponibile.</p>
+            </article>
+            <article>
+              <strong>Bluetooth fallback</strong>
+              <p>Riprodurre lo stream nel player HTML5 e uscire verso Bose tramite pairing Bluetooth.</p>
+            </article>
+            <article>
+              <strong>UPnP/DLNA research</strong>
+              <p>Continuare la ricerca su eventuale selezione locale UPnP/DLNA senza dipendere dal catalogo TuneIn cloud.</p>
+            </article>
+            <article>
+              <strong>Future local bridge</strong>
+              <p>Possibile bridge locale futuro per servire stream compatibili alla rete, senza promettere oggi playback diretto Bose.</p>
+            </article>
           </div>
         </div>
       </section>
