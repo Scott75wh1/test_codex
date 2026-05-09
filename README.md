@@ -2,9 +2,9 @@
 
 Dashboard locale **Node.js + Express + React/Vite** per testare le API Bose SoundTouch sulla LAN.
 
-La V3 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che rileva la subnet LAN del server Node, cerca dispositivi Bose SoundTouch, inoltra le richieste HTTP/XML al dispositivo su `http://IP:8090` e apre un bridge realtime verso `ws://BOSE_IP:8080` usando il subprotocol WebSocket `gabbo`.
+La V4 non usa Cloud Task o servizi cloud: il browser chiama il backend Express locale, che rileva la subnet LAN del server Node, cerca dispositivi Bose SoundTouch, inoltra le richieste HTTP/XML al dispositivo su `http://IP:8090` e apre un bridge realtime verso `ws://BOSE_IP:8080` usando il subprotocol WebSocket `gabbo`.
 
-## Funzioni V3
+## Funzioni V4
 
 - Campo per l'indirizzo IP del Bose SoundTouch con salvataggio dell'ultimo IP funzionante in `localStorage`.
 - Pulsante **Cerca dispositivi Bose** che chiama `GET /api/discover`.
@@ -18,11 +18,16 @@ La V3 non usa Cloud Task o servizi cloud: il browser chiama il backend Express l
 - UI realtime per source attiva, titolo, artista, stato play/pause e volume.
 - Pannello debug eventi raw per vedere tutti gli XML originali Bose anche se i nomi evento differiscono. Se arriva solo `SoundTouchSdkInfo`, lo stato mostra che la WebSocket è aperta e in attesa di notifiche.
 - Pulsante **Forza refresh REST** per sincronizzare manualmente `GET /now_playing`, `GET /volume` e `GET /sources`. Dopo ogni comando inviato dall’app viene eseguito automaticamente un polling REST di `now_playing` e `volume` dopo 300ms.
+- Nuovo pannello **Inspector** con tab `Info`, `Sources`, `Presets`, `Now Playing`, `Raw XML` e `WebSocket Events`.
+- Ogni risposta inspector salva raw XML, parsed JSON e timestamp; i preset mostrano id, source, sourceAccount, location, container, itemName, art e stationName con fallback se mancano campi.
+- Export **JSON diagnostics** e **raw XML** per analizzare come Bose referenzia internamente radio web e preset legacy.
+- Storico degli ultimi 50 eventi WebSocket nel tab inspector dedicato.
 - Test `GET http://IP:8090/info`.
 - Proxy locale per:
   - `GET /info`
-  - `GET /now_playing`
+  - `GET /now_playing` e alias inspector `GET /now-playing`
   - `GET /sources`
+  - `GET /presets`
   - `GET /volume`
   - `POST /volume` con payload XML `<volume>...</volume>`
   - `POST /key` per `PLAY_PAUSE`, `STOP`, `VOLUME_UP`, `VOLUME_DOWN`
@@ -93,13 +98,22 @@ curl http://localhost:3001/api/discover
 
 La risposta include `devices` con nome, IP, `deviceID` e tipo prodotto se presente, più `logs` tecnici per gli host scansionati.
 
-Bridge realtime via Server-Sent Events verso il browser e WebSocket verso Bose:
+Inspector e bridge realtime via Server-Sent Events verso il browser e WebSocket verso Bose:
 
 ```bash
 curl -N http://localhost:3001/api/realtime/192.168.1.50
 ```
 
 Il backend si collega a `ws://192.168.1.50:8080` con subprotocol `gabbo`, inoltra gli eventi raw al frontend, invia ping/keepalive e prova a riconnettersi automaticamente se la connessione cade. Se la Bose invia solo `<SoundTouchSdkInfo ... />`, la dashboard lo mostra come WebSocket aperta in attesa di notifiche.
+
+Endpoint inspector/rest principali:
+
+```bash
+curl http://localhost:3001/api/bose/192.168.1.50/info
+curl http://localhost:3001/api/bose/192.168.1.50/sources
+curl http://localhost:3001/api/bose/192.168.1.50/presets
+curl http://localhost:3001/api/bose/192.168.1.50/now-playing
+```
 
 Sostituisci `192.168.1.50` con l'IP del tuo Bose.
 

@@ -66,6 +66,27 @@ type RealtimeEvent = {
   raw?: string;
 };
 
+type InspectorTab = 'Info' | 'Sources' | 'Presets' | 'Now Playing' | 'Raw XML' | 'WebSocket Events';
+
+type InspectorRecord = {
+  label: string;
+  endpoint: string;
+  rawXml: string;
+  parsedJson: unknown;
+  timestamp: string;
+};
+
+type ParsedPreset = {
+  id: string | null;
+  source: string | null;
+  sourceAccount: string | null;
+  location: string | null;
+  container: string | null;
+  itemName: string | null;
+  art: string | null;
+  stationName: string | null;
+};
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? '/api';
 const LAST_IP_STORAGE_KEY = 'soundtouch-radio-bridge:last-ip';
 const ENDPOINTS: Array<{ id: BoseEndpoint; label: string; method: string }> = [
@@ -75,6 +96,7 @@ const ENDPOINTS: Array<{ id: BoseEndpoint; label: string; method: string }> = [
   { id: 'volume', label: 'Volume', method: 'GET /volume' }
 ];
 const KEYS: BoseKey[] = ['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN'];
+const INSPECTOR_TABS: InspectorTab[] = ['Info', 'Sources', 'Presets', 'Now Playing', 'Raw XML', 'WebSocket Events'];
 
 function now() {
   return new Date().toLocaleTimeString('it-IT');
@@ -172,6 +194,102 @@ function parseRestSnapshot(nowPlayingXml: string, volumeXml: string) {
   };
 }
 
+
+function parseXmlAttributes(fragment: string) {
+  return Object.fromEntries([...fragment.matchAll(/([\w:-]+)="([^"]*)"/g)].map((match) => [match[1], match[2]]));
+}
+
+
+function formatXml(xml: string) {
+  return xml
+    .replace(/></g, '>' + '\n' + '<')
+    .split('\n')
+    .reduce<{ depth: number; lines: string[] }>((acc, line) => {
+      const trimmed = line.trim();
+      const closes = /^<\//.test(trimmed);
+      const selfClosing = /\/?>$/.test(trimmed) && /\/>$/.test(trimmed);
+      const declaration = /^<\?/.test(trimmed) || /^<!--/.test(trimmed);
+      const depth = closes ? Math.max(acc.depth - 1, 0) : acc.depth;
+      acc.lines.push(`${'  '.repeat(depth)}${trimmed}`);
+      acc.depth = !closes && !selfClosing && !declaration && /^<[^/!][^>]*>$/.test(trimmed) ? depth + 1 : depth;
+      return acc;
+    }, { depth: 0, lines: [] })
+    .lines
+    .join('\n');
+}
+
+function findXmlBlocks(xml: string, tagName: string) {
+  return [...xml.matchAll(new RegExp(`<${tagName}\\b[\\s\\S]*?</${tagName}>`, 'gi'))].map((match) => match[0]);
+}
+
+function parsePresetXml(presetXml: string): ParsedPreset {
+  const openTag = presetXml.match(/<preset\b[^>]*>/i)?.[0] ?? '';
+  const attrs = parseXmlAttributes(openTag);
+
+  return {
+    id: attrs.id ?? extractXmlValue(presetXml, 'id'),
+    source: extractXmlAttribute(presetXml, 'source') ?? extractXmlValue(presetXml, 'source'),
+    sourceAccount: extractXmlAttribute(presetXml, 'sourceAccount') ?? extractXmlValue(presetXml, 'sourceAccount'),
+    location: extractXmlValue(presetXml, 'location'),
+    container: extractXmlValue(presetXml, 'container'),
+    itemName: extractXmlValue(presetXml, 'itemName'),
+    art: extractXmlValue(presetXml, 'art'),
+    stationName: extractXmlValue(presetXml, 'stationName')
+  };
+}
+
+function parseSourcesXml(xml: string) {
+  return findXmlBlocks(xml, 'sourceItem').map((sourceXml) => ({
+    source: extractXmlAttribute(sourceXml, 'source'),
+    sourceAccount: extractXmlAttribute(sourceXml, 'sourceAccount'),
+    status: extractXmlAttribute(sourceXml, 'status'),
+    isLocal: extractXmlAttribute(sourceXml, 'isLocal'),
+    multiroomAllowed: extractXmlAttribute(sourceXml, 'multiroomallowed'),
+    text: sourceXml.replace(/<[^>]+>/g, '').trim() || null
+  }));
+}
+
+function parseInspectorXml(label: InspectorTab, rawXml: string) {
+  const rootTag = rawXml.match(/<([a-zA-Z][\w:-]*)\b/)?.[1] ?? 'raw';
+  const base = { rootTag, attributes: parseXmlAttributes(rawXml.match(/<[^!?][^>]*>/)?.[0] ?? '') };
+
+  if (label === 'Presets') {
+    return { ...base, presets: findXmlBlocks(rawXml, 'preset').map(parsePresetXml) };
+  }
+
+  if (label === 'Sources') {
+    return { ...base, sources: parseSourcesXml(rawXml) };
+  }
+
+  if (label === 'Now Playing') {
+    return { ...base, nowPlaying: parseRestSnapshot(rawXml, '') };
+  }
+
+  if (label === 'Info') {
+    return {
+      ...base,
+      info: {
+        name: extractXmlValue(rawXml, 'name'),
+        type: extractXmlValue(rawXml, 'type'),
+        deviceID: extractXmlAttribute(rawXml, 'deviceID') ?? extractXmlValue(rawXml, 'deviceID'),
+        networkInfo: extractXmlValue(rawXml, 'networkInfo')
+      }
+    };
+  }
+
+  return base;
+}
+
+function downloadText(filename: string, text: string, type: string) {
+  const blob = new Blob([text], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
 function getStoredIp() {
   return window.localStorage.getItem(LAST_IP_STORAGE_KEY) ?? '192.168.1.50';
 }
@@ -198,6 +316,9 @@ export default function App() {
     volume: 'n/d'
   });
   const [realtimeEvents, setRealtimeEvents] = useState<RealtimeEvent[]>([]);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>('Info');
+  const [inspectorRecords, setInspectorRecords] = useState<Partial<Record<InspectorTab, InspectorRecord>>>({});
+  const [inspectorLoading, setInspectorLoading] = useState(false);
   const realtimeSourceRef = useRef<EventSource | null>(null);
   const encodedIp = useMemo(() => encodeURIComponent(boseIp.trim()), [boseIp]);
   const canSend = encodedIp.length > 0;
@@ -386,7 +507,7 @@ export default function App() {
 
 
   function applyRealtimeEvent(event: RealtimeEvent) {
-    setRealtimeEvents((prev) => [event, ...prev].slice(0, 120));
+    setRealtimeEvents((prev) => [event, ...prev].slice(0, 50));
 
     if (event.connectionState || event.eventName === 'connectionStateUpdated') {
       setRealtimeState(event.connectionState ?? event.message ?? 'connectionStateUpdated');
@@ -435,14 +556,73 @@ export default function App() {
     };
   }
 
+
+  function getInspectorEndpoint(tab: InspectorTab) {
+    if (tab === 'Info') return 'info';
+    if (tab === 'Sources') return 'sources';
+    if (tab === 'Presets') return 'presets';
+    if (tab === 'Now Playing') return 'now-playing';
+    return null;
+  }
+
+  async function loadInspectorTab(tab = inspectorTab) {
+    const endpoint = getInspectorEndpoint(tab);
+    if (!endpoint || !canSend) {
+      return;
+    }
+
+    setInspectorLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/bose/${encodedIp}/${endpoint}`);
+      const rawXml = await res.text();
+      const record: InspectorRecord = {
+        label: tab,
+        endpoint,
+        rawXml,
+        parsedJson: parseInspectorXml(tab, rawXml),
+        timestamp: new Date().toISOString()
+      };
+      setInspectorRecords((prev) => ({ ...prev, [tab]: record }));
+      appendLog(makeLog(res.ok ? 'online' : 'offline', `Inspector ${tab}: HTTP ${res.status}`, boseIp));
+    } catch (error) {
+      appendLog(makeLog('offline', error instanceof Error ? error.message : `Inspector ${tab} fallito.`, boseIp));
+    } finally {
+      setInspectorLoading(false);
+    }
+  }
+
+  async function loadAllInspectorTabs() {
+    for (const tab of ['Info', 'Sources', 'Presets', 'Now Playing'] as InspectorTab[]) {
+      await loadInspectorTab(tab);
+    }
+  }
+
+  function exportDiagnosticsJson() {
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      activeIp: boseIp,
+      inspectorRecords,
+      websocketEvents: realtimeEvents
+    };
+    downloadText(`soundtouch-diagnostics-${boseIp || 'device'}.json`, JSON.stringify(payload, null, 2), 'application/json');
+  }
+
+  function exportRawXml() {
+    const text = Object.values(inspectorRecords)
+      .filter(Boolean)
+      .map((record) => `<!-- ${record.label} · ${record.endpoint} · ${record.timestamp} -->\n${record.rawXml}`)
+      .join('\n\n');
+    downloadText(`soundtouch-raw-${boseIp || 'device'}.xml`, text || '<!-- Nessun XML inspector caricato -->', 'application/xml');
+  }
+
   return (
     <div className="app-shell">
       <header className="hero">
         <div>
-          <p className="eyebrow">LAN testing dashboard · V3 realtime</p>
+          <p className="eyebrow">LAN testing dashboard · V4 inspector</p>
           <h1>SoundTouch Radio Bridge</h1>
           <p className="subtitle">
-            App locale Node.js + Express + React/Vite per trovare Bose SoundTouch 30 in LAN, provare le API SoundTouch e ricevere eventi realtime.
+            App locale Node.js + Express + React/Vite per trovare Bose SoundTouch 30 in LAN, provare le API SoundTouch e ricevere eventi realtime e ispezionare preset/radio legacy.
           </p>
         </div>
         <div className={`status-card connection-${connectionStatus.replace(' ', '-')}`}>
@@ -591,10 +771,85 @@ export default function App() {
         </div>
       </section>
 
+      <section className="panel inspector-panel">
+        <div className="response-heading">
+          <div>
+            <p className="eyebrow">V4 Diagnostic Inspector</p>
+            <h2>Inspector</h2>
+          </div>
+          <span>{inspectorLoading ? 'caricamento…' : 'raw XML + parsed JSON'}</span>
+        </div>
+        <div className="inspector-actions">
+          <div className="tab-row">
+            {INSPECTOR_TABS.map((tab) => (
+              <button
+                className={inspectorTab === tab ? 'active' : ''}
+                key={tab}
+                type="button"
+                onClick={() => {
+                  setInspectorTab(tab);
+                  if (!['Raw XML', 'WebSocket Events'].includes(tab)) {
+                    void loadInspectorTab(tab);
+                  }
+                }}
+              >
+                {tab}
+              </button>
+            ))}
+          </div>
+          <div className="export-row">
+            <button type="button" onClick={() => void loadAllInspectorTabs()} disabled={!canSend || inspectorLoading}>
+              Aggiorna inspector
+            </button>
+            <button type="button" onClick={exportDiagnosticsJson}>Export JSON diagnostics</button>
+            <button type="button" onClick={exportRawXml}>Export raw XML</button>
+          </div>
+        </div>
+
+        {inspectorTab === 'WebSocket Events' ? (
+          <div className="inspector-content">
+            <h3>Ultimi 50 eventi WebSocket</h3>
+            <pre>{JSON.stringify(realtimeEvents, null, 2)}</pre>
+          </div>
+        ) : inspectorTab === 'Raw XML' ? (
+          <div className="inspector-content">
+            <h3>Raw XML raccolto</h3>
+            <pre>{Object.values(inspectorRecords).filter(Boolean).map((record) => `<!-- ${record.label} · ${record.timestamp} -->\n${formatXml(record.rawXml)}`).join('\n\n') || 'Carica una tab inspector per vedere XML raw.'}</pre>
+          </div>
+        ) : (
+          <div className="inspector-content">
+            <div className="inspector-meta">
+              <span>Endpoint: {inspectorRecords[inspectorTab]?.endpoint ?? getInspectorEndpoint(inspectorTab)}</span>
+              <span>Timestamp: {inspectorRecords[inspectorTab]?.timestamp ?? 'n/d'}</span>
+            </div>
+            {inspectorTab === 'Presets' && inspectorRecords.Presets ? (
+              <div className="preset-table">
+                {(inspectorRecords.Presets.parsedJson as { presets?: ParsedPreset[] }).presets?.map((preset, index) => (
+                  <article key={`${preset.id ?? index}-${preset.location ?? 'preset'}`}>
+                    <strong>Preset {preset.id ?? index + 1}</strong>
+                    <span>source: {preset.source ?? 'n/d'}</span>
+                    <span>sourceAccount: {preset.sourceAccount ?? 'n/d'}</span>
+                    <span>location: {preset.location ?? 'n/d'}</span>
+                    <span>container: {preset.container ?? 'n/d'}</span>
+                    <span>itemName: {preset.itemName ?? 'n/d'}</span>
+                    <span>art: {preset.art ?? 'n/d'}</span>
+                    <span>stationName: {preset.stationName ?? 'n/d'}</span>
+                  </article>
+                )) ?? <p className="hint">Nessun preset parsato.</p>}
+              </div>
+            ) : null}
+            <h3>Parsed JSON</h3>
+            <pre>{JSON.stringify(inspectorRecords[inspectorTab]?.parsedJson ?? {}, null, 2)}</pre>
+            <h3>Raw XML leggibile</h3>
+            <pre>{inspectorRecords[inspectorTab]?.rawXml ? formatXml(inspectorRecords[inspectorTab].rawXml) : 'Premi la tab o “Aggiorna inspector” per caricare XML.'}</pre>
+          </div>
+        )}
+      </section>
+
       <section className="panel log-panel">
         <div className="response-heading">
           <div>
-            <p className="eyebrow">Diagnostica V3</p>
+            <p className="eyebrow">Diagnostica V4</p>
             <h2>Log tecnico</h2>
           </div>
           <span>{technicalLogs.length} eventi</span>

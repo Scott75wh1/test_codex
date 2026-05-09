@@ -510,6 +510,22 @@ app.get('/api/bose/:ip/now_playing', async (req, res, next) => {
   }
 });
 
+app.get('/api/bose/:ip/now-playing', async (req, res, next) => {
+  try {
+    sendXml(res, await fetchSoundTouch(req.params.ip, '/now_playing'));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get('/api/bose/:ip/presets', async (req, res, next) => {
+  try {
+    sendXml(res, await fetchSoundTouch(req.params.ip, '/presets'));
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get('/api/bose/:ip/sources', async (req, res, next) => {
   try {
     sendXml(res, await fetchSoundTouch(req.params.ip, '/sources'));
