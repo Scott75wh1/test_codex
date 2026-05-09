@@ -54,6 +54,15 @@ type RadioSearchResult = {
   lastcheckok: boolean;
 };
 
+type BoseSourceItem = {
+  source: string | null;
+  sourceAccount: string | null;
+  status: string | null;
+  isLocal: string | null;
+  multiroomAllowed: string | null;
+  text: string | null;
+};
+
 type UpnpSoapResult = {
   url: string;
   soapAction: string;
@@ -489,7 +498,7 @@ function parsePresetXml(presetXml: string): ParsedPreset {
   };
 }
 
-function parseSourcesXml(xml: string) {
+function parseSourcesXml(xml: string): BoseSourceItem[] {
   return findXmlBlocks(xml, 'sourceItem').map((sourceXml) => ({
     source: extractXmlAttribute(sourceXml, 'source'),
     sourceAccount: extractXmlAttribute(sourceXml, 'sourceAccount'),
@@ -627,6 +636,9 @@ export default function App() {
   const [response, setResponse] = useState<ApiResponse>(() => makeInitialResponse());
   const [radios, setRadios] = useState<Radio[]>([]);
   const [replacementPresets, setReplacementPresets] = useState<ReplacementPreset[]>([]);
+  const [deviceName, setDeviceName] = useState('SoundTouch 30');
+  const [availableSources, setAvailableSources] = useState<BoseSourceItem[]>([]);
+  const [editingPresetId, setEditingPresetId] = useState<number | null>(null);
   const [replacementLoading, setReplacementLoading] = useState(false);
   const [replacementSavingId, setReplacementSavingId] = useState<number | null>(null);
   const [replacementStreamChecks, setReplacementStreamChecks] = useState<Record<number, StreamCheckResult>>({});
@@ -639,7 +651,6 @@ export default function App() {
   const [radioSearchLoading, setRadioSearchLoading] = useState(false);
   const [radioSearchError, setRadioSearchError] = useState('');
   const [radioSearchResults, setRadioSearchResults] = useState<RadioSearchResult[]>([]);
-  const [selectedStationForPreset, setSelectedStationForPreset] = useState<RadioSearchResult | null>(null);
   const [manualPresetDraft, setManualPresetDraft] = useState({ name: '', streamUrl: '', logoUrl: '', category: '', notes: '' });
   const [selectedUpnpPresetId, setSelectedUpnpPresetId] = useState(2);
   const [upnpStreamUrl, setUpnpStreamUrl] = useState(UPNP_TEST_STREAMS[0]);
@@ -701,6 +712,13 @@ export default function App() {
     void loadReplacementPresets();
   }, []);
 
+  useEffect(() => {
+    if (boseIp.trim()) {
+      void forceRefreshRest('avvio telecomando', true);
+      void runRequest('GET /info', () => fetch(`${API_BASE}/bose/${encodedIp}/info`), 'info');
+    }
+  }, []);
+
   useEffect(() => () => {
     realtimeSourceRef.current?.close();
   }, []);
@@ -747,6 +765,10 @@ export default function App() {
       if (endpoint === 'info') {
         const nextStatus = statusFromInfoResponse(apiResponse, body);
         setConnectionStatus(nextStatus);
+        const parsedName = extractXmlValue(body, 'name');
+        if (parsedName) {
+          setDeviceName(parsedName);
+        }
         appendLog(makeLog(nextStatus, `GET /info completato con stato ${nextStatus}.`, boseIp));
         if (nextStatus === 'online') {
           window.localStorage.setItem(LAST_IP_STORAGE_KEY, boseIp);
@@ -818,6 +840,9 @@ export default function App() {
         sourcesResponse ? sourcesResponse.text() : Promise.resolve('')
       ]);
       const restSnapshot = parseRestSnapshot(nowPlayingXml, volumeXml);
+      if (includeSources && sourcesXml) {
+        setAvailableSources(parseSourcesXml(sourcesXml));
+      }
 
       setRealtimeSnapshot((prev) => ({
         source: restSnapshot.source || prev.source,
@@ -1603,20 +1628,79 @@ export default function App() {
     }
   }
 
-  async function assignPresetFromStation(presetId: number, station: RadioSearchResult) {
-    const nextPreset: ReplacementPreset = {
-      id: presetId,
-      name: station.name || `Preset ${presetId}`,
+  function openPresetEditor(preset: ReplacementPreset) {
+    setEditingPresetId(preset.id);
+    setManualPresetDraft({
+      name: preset.name,
+      streamUrl: preset.streamUrl,
+      logoUrl: preset.logoUrl ?? '',
+      category: preset.category ?? '',
+      notes: preset.notes ?? ''
+    });
+    setRadioSearchError('');
+  }
+
+  function useStationInPresetEditor(station: RadioSearchResult) {
+    setManualPresetDraft({
+      name: station.name,
       streamUrl: station.streamUrl,
       logoUrl: station.favicon,
-      category: station.tags.split(',').map((item) => item.trim()).filter(Boolean)[0] || station.country || 'Radio Browser',
-      notes: [station.codec, station.bitrate ? `${station.bitrate} kbps` : '', station.language, station.homepage].filter(Boolean).join(' · '),
-      enabled: true,
-      lastPlayedAt: replacementPresets.find((preset) => preset.id === presetId)?.lastPlayedAt ?? ''
-    };
-    await saveReplacementPreset(nextPreset);
-    setSelectedStationForPreset(null);
-    await checkPresetStreamById(presetId);
+      category: station.tags.split(',').map((item) => item.trim()).filter(Boolean)[0] || station.country || 'Radio',
+      notes: [station.codec, station.bitrate ? `${station.bitrate} kbps` : '', station.language, station.homepage].filter(Boolean).join(' · ')
+    });
+  }
+
+  async function saveEditingPreset() {
+    if (!editingPresetId) return;
+    await saveManualPreset(editingPresetId);
+    setEditingPresetId(null);
+  }
+
+  function isSelectableSource(source: BoseSourceItem) {
+    const value = String(source.source ?? '').toUpperCase();
+    return ['AUX', 'BLUETOOTH'].includes(value);
+  }
+
+  function getSourceLabel(source: BoseSourceItem) {
+    const value = String(source.source ?? '').toUpperCase();
+    if (value === 'AUX') return 'AUX';
+    if (value === 'BLUETOOTH') return 'Bluetooth';
+    if (value === 'AIRPLAY') return 'AirPlay';
+    if (value === 'SPOTIFY') return 'Spotify';
+    if (value === 'UPNP' || value === 'LOCAL_INTERNET_RADIO' || value === 'TUNEIN') return 'UPNP / Radio';
+    return source.text || value || 'Sorgente';
+  }
+
+  function getSourceSelectXml(source: BoseSourceItem) {
+    const value = String(source.source ?? '').toUpperCase();
+    if (value === 'AUX') return '<ContentItem source="AUX" sourceAccount="AUX"></ContentItem>';
+    if (value === 'BLUETOOTH') return '<ContentItem source="BLUETOOTH"></ContentItem>';
+    return '';
+  }
+
+  async function selectRemoteSource(source: BoseSourceItem) {
+    if (!isSelectableSource(source)) return;
+    await trySelectXml(getSourceSelectXml(source), getSourceLabel(source));
+    window.setTimeout(() => {
+      void forceRefreshRest(`sync sorgente ${getSourceLabel(source)}`, false);
+    }, 500);
+  }
+
+  function changeVolume(delta: number) {
+    const nextVolume = Math.min(100, Math.max(0, volume + delta));
+    setVolume(nextVolume);
+    void (async () => {
+      await runRequest('POST /volume XML', () =>
+        fetch(`${API_BASE}/bose/${encodedIp}/volume`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ volume: nextVolume })
+        })
+      );
+      window.setTimeout(() => {
+        void forceRefreshRest('sync dopo comando volume app', false);
+      }, 300);
+    })();
   }
 
   async function saveManualPreset(presetId: number) {
@@ -2010,9 +2094,10 @@ export default function App() {
 
 
   const presetDiagnosis = getPresetDiagnosis();
+  const isDiagnosticsRoute = window.location.pathname.includes('/dashboard/diagnostics');
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${isDiagnosticsRoute ? 'diagnostics-route' : 'remote-route'}`}>
       <header className="hero">
         <div>
           <p className="eyebrow">LAN testing dashboard · V5 select tester</p>
@@ -2029,204 +2114,149 @@ export default function App() {
       </header>
 
       <main className="dashboard-grid">
-        <section className="panel radio-presets-player-panel v11-hero-panel">
-          <div className="v11-hero">
+        <section className="panel remote-control-panel">
+          <div className="remote-header-card">
             <div>
-              <p className="eyebrow">V11 Final MVP</p>
-              <h1>SoundTouch Radio Bridge</h1>
-              <p className="hint">Cerca radio online, salvale in uno dei 6 preset locali e fai riprodurre la Bose direttamente via UPnP AVTransport sulla porta 8091.</p>
+              <p className="eyebrow">Bose SoundTouch 30</p>
+              <h1>SoundTouch Radio Remote</h1>
+              <p>{deviceName} · {boseIp || 'IP non impostato'}</p>
             </div>
-            <div className="bose-status-card">
-              <span className={`status-dot ${connectionStatus === 'online' || realtimeConnected ? 'online' : connectionStatus === 'scanning' ? 'loading' : 'offline'}`} />
-              <div>
-                <strong>{connectionStatus === 'online' || realtimeConnected ? 'Bose online' : connectionStatus}</strong>
-                <small>{boseIp || 'IP non impostato'} · realtime {realtimeState}</small>
-              </div>
+            <div className={`remote-status ${connectionStatus === 'online' || realtimeConnected ? 'online' : 'offline'}`}>
+              <span />
+              <strong>{connectionStatus === 'online' || realtimeConnected ? 'Online' : 'Offline'}</strong>
             </div>
           </div>
 
-          <div className="v11-layout">
-            <section className="v11-presets-column">
-              <div className="section-title-row">
-                <div>
-                  <h2>Preset radio locali</h2>
-                  <p className="hint">Tutti i preset, default e utente, partono dallo stesso JSON e dallo stesso endpoint backend: preset id → streamUrl → Stop/SetURI/Play.</p>
+          <div className="remote-layout">
+            <section className="remote-main-column">
+              <div className="remote-card now-playing-card">
+                <p className="eyebrow">Now Playing</p>
+                <h2>{radioPresetNowPlaying?.name ?? realtimeSnapshot.title ?? realtimeSnapshot.itemName ?? 'Nessuna riproduzione'}</h2>
+                <p>{realtimeSnapshot.artist && realtimeSnapshot.artist !== 'n/d' ? realtimeSnapshot.artist : realtimeSnapshot.stationName ?? deviceName}</p>
+                <div className="now-playing-meta">
+                  <span>{realtimeSnapshot.source || 'UPNP / Radio'}</span>
+                  <span>{realtimeSnapshot.playStatus || 'STOPPED'}</span>
+                  <span>Vol {realtimeSnapshot.volume !== 'n/d' ? realtimeSnapshot.volume : volume}</span>
                 </div>
-                <button type="button" onClick={() => void loadReplacementPresets()} disabled={replacementLoading}>
-                  {replacementLoading ? 'Aggiorno…' : 'Ricarica'}
-                </button>
+                {radioPresetLastResult ? <small className="remote-last-command">{radioPresetLastResult.outcome}</small> : null}
               </div>
 
-              <div className="radio-player-toolbar v11-toolbar">
-                <div className="now-playing-pill">
-                  <span>Now playing</span>
-                  <strong>{radioPresetNowPlaying?.name ?? realtimeSnapshot.title ?? 'n/d'}</strong>
-                  <small>source {realtimeSnapshot.source} · play {realtimeSnapshot.playStatus} · realtime {realtimeState}</small>
+              <div className="remote-card transport-card">
+                <h2>Controlli</h2>
+                <div className="transport-grid">
+                  <button type="button" onClick={() => postKey('PLAY_PAUSE')} disabled={!canSend}>▶︎/Ⅱ</button>
+                  <button type="button" onClick={() => void stopRadioPresetPlayback()} disabled={!canSend || radioPresetPlayingId !== null}>■</button>
+                  <button type="button" onClick={() => changeVolume(-5)} disabled={!canSend}>−</button>
+                  <button type="button" onClick={() => changeVolume(5)} disabled={!canSend}>＋</button>
+                  <button type="button" onClick={() => changeVolume(-volume)} disabled={!canSend} title="Mute via volume 0">Mute</button>
                 </div>
-                <div className="radio-volume-control">
-                  <label className="field-label" htmlFor="radio-volume">Volume Bose: {volume}</label>
-                  <input id="radio-volume" type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(Number(event.target.value))} />
-                  <button type="button" onClick={postVolume} disabled={!canSend}>Applica volume</button>
-                </div>
-                <button type="button" className="stop-button touch-button" onClick={() => void stopRadioPresetPlayback()} disabled={!canSend || radioPresetPlayingId !== null}>
-                  Stop globale
-                </button>
+                <label className="remote-volume-slider" htmlFor="remote-volume">
+                  <span>Volume {volume}</span>
+                  <input id="remote-volume" type="range" min="0" max="100" value={volume} onChange={(event) => setVolume(Number(event.target.value))} onMouseUp={postVolume} onTouchEnd={postVolume} />
+                </label>
               </div>
 
-              <div className="radio-preset-card-grid v11-preset-grid">
-                {replacementPresets.map((preset) => {
-                  const streamCheck = replacementStreamChecks[preset.id];
-                  const isPlaying = radioPresetPlayingId === preset.id;
-                  const isCurrent = radioPresetNowPlaying?.id === preset.id;
-
-                  return (
-                    <article key={`radio-player-${preset.id}`} className={`${!preset.enabled ? 'disabled' : ''} ${isCurrent ? 'current' : ''} ${isPlaying ? 'loading' : ''}`}>
-                      <div className="physical-preset-number">{preset.id}</div>
-                      {preset.logoUrl ? <img src={preset.logoUrl} alt="" /> : <div className="preset-logo-placeholder">♪</div>}
-                      <div>
+              <div className="remote-card presets-remote-card">
+                <div className="remote-section-heading">
+                  <h2>Preset Radio</h2>
+                  <span>{replacementPresets.length}/6</span>
+                </div>
+                <div className="remote-preset-grid">
+                  {replacementPresets.map((preset) => {
+                    const isPlaying = radioPresetPlayingId === preset.id;
+                    const isCurrent = radioPresetNowPlaying?.id === preset.id;
+                    return (
+                      <article key={`remote-preset-${preset.id}`} className={isCurrent ? 'active' : ''}>
+                        <div className="remote-preset-topline">
+                          <span>{preset.id}</span>
+                          <button type="button" onClick={() => openPresetEditor(preset)} aria-label={`Modifica preset ${preset.id}`}>✎</button>
+                        </div>
+                        {preset.logoUrl ? <img src={preset.logoUrl} alt="" /> : <div className="remote-logo-placeholder">♪</div>}
                         <h3>{preset.name}</h3>
                         <p>{preset.category || 'Radio'}</p>
-                        <code>{preset.streamUrl || 'stream URL mancante'}</code>
-                      </div>
-                      <div className="preset-card-actions">
-                        <button type="button" className="touch-button primary-action" onClick={() => void playRadioPreset(preset)} disabled={!canSend || !preset.enabled || isPlaying || !preset.streamUrl.trim()}>
-                          {isPlaying ? 'Avvio…' : 'Play'}
+                        <button type="button" className="remote-play-button" onClick={() => void playRadioPreset(preset)} disabled={!canSend || !preset.enabled || isPlaying || !preset.streamUrl.trim()}>
+                          {isPlaying ? 'Avvio…' : isCurrent ? 'In onda' : 'Play'}
                         </button>
-                        <button type="button" className="touch-button" onClick={() => void checkReplacementStream(preset)} disabled={!preset.streamUrl.trim()}>
-                          Test
-                        </button>
-                        <button type="button" className="touch-button" onClick={() => setSelectedStationForPreset({ name: preset.name, streamUrl: preset.streamUrl, favicon: preset.logoUrl ?? '', homepage: '', country: '', language: '', tags: preset.category ?? '', codec: '', bitrate: 0, lastcheckok: true })}>
-                          Modifica
-                        </button>
-                      </div>
-                      <div className={`stream-status ${streamCheck?.potentiallyPlayable ? 'ok' : streamCheck ? 'error' : 'idle'}`}>
-                        <span>{streamCheck ? (streamCheck.potentiallyPlayable ? 'stream potenzialmente valido' : streamCheck.ok ? 'raggiungibile: verifica MIME' : 'errore stream') : 'stream non testato'}</span>
-                        <small>{streamCheck?.mimeType ? `${streamCheck.mimeType}` : streamCheck?.error ?? (streamCheck?.status ? `HTTP ${streamCheck.status}` : 'content-type n/d')}</small>
-                        {streamCheck?.finalUrl ? <small>final URL: {streamCheck.finalUrl}</small> : null}
-                      </div>
-                      {preset.lastPlayedAt ? <small>Ultimo play: {new Date(preset.lastPlayedAt).toLocaleString('it-IT')}</small> : null}
-                    </article>
-                  );
-                })}
+                      </article>
+                    );
+                  })}
+                </div>
               </div>
-
-              <details className="advanced-logs">
-                <summary>Advanced Logs · ultimo play UPnP</summary>
-                {radioPresetLastResult ? (
-                  <div className="poll-grid">
-                    <details open>
-                      <summary>SOAP Stop / SetAVTransportURI / Play</summary>
-                      <pre>{JSON.stringify({ stop: radioPresetLastResult.stopResult, setUri: radioPresetLastResult.setUriResult, play: radioPresetLastResult.playResult }, null, 2)}</pre>
-                    </details>
-                    <details open>
-                      <summary>GetTransportInfo</summary>
-                      <pre>{JSON.stringify(radioPresetLastResult.getTransportInfoResult ?? {}, null, 2)}</pre>
-                    </details>
-                    <details open>
-                      <summary>GetPositionInfo</summary>
-                      <pre>{JSON.stringify(radioPresetLastResult.getPositionInfoResult ?? {}, null, 2)}</pre>
-                    </details>
-                    <details open>
-                      <summary>/now_playing polling</summary>
-                      <pre>{JSON.stringify(radioPresetLastResult.nowPlayingAfter, null, 2)}</pre>
-                    </details>
-                    {radioPresetLastResult.errorUpdateRaw ? <pre>{radioPresetLastResult.errorUpdateRaw}</pre> : null}
-                  </div>
-                ) : <p className="hint">Nessun log player disponibile. Se manca streamUrl, l’errore comparirà qui e nei log tecnici.</p>}
-              </details>
             </section>
 
-            <aside className="v11-search-column">
-              <section className="radio-search-panel">
-                <div className="section-title-row">
-                  <div>
-                    <h2>Cerca radio</h2>
-                    <p className="hint">Radio Browser serve solo per trovare stream radio; il salvataggio resta locale.</p>
-                  </div>
-                </div>
-                <form className="radio-search-form" onSubmit={(event) => { event.preventDefault(); void searchRadios(); }}>
-                  <input className="big-search-input" value={radioSearchQuery} onChange={(event) => setRadioSearchQuery(event.target.value)} placeholder="BBC, jazz, paradise…" />
-                  <div className="search-filter-row">
-                    <input value={radioSearchCountry} onChange={(event) => setRadioSearchCountry(event.target.value)} placeholder="Paese opzionale" />
-                    <input value={radioSearchTag} onChange={(event) => setRadioSearchTag(event.target.value)} placeholder="Tag opzionale" />
-                  </div>
-                  <button type="submit" className="touch-button primary-action" disabled={radioSearchLoading}>{radioSearchLoading ? 'Cerco…' : 'Cerca radio online'}</button>
-                  {radioSearchError ? <p className="error-text">{radioSearchError}</p> : null}
-                </form>
-
-                <div className="manual-preset-form">
-                  <h3>Inserimento manuale streamUrl</h3>
-                  <input value={manualPresetDraft.name} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="Nome radio" />
-                  <input value={manualPresetDraft.streamUrl} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, streamUrl: event.target.value }))} placeholder="http:// o https:// stream diretto" />
-                  <div className="search-filter-row">
-                    <input value={manualPresetDraft.logoUrl} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, logoUrl: event.target.value }))} placeholder="Logo URL opzionale" />
-                    <input value={manualPresetDraft.category} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, category: event.target.value }))} placeholder="Categoria" />
-                  </div>
-                  <textarea value={manualPresetDraft.notes} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, notes: event.target.value }))} placeholder="Note" rows={2} />
-                  <div className="preset-picker-inline">
-                    {replacementPresets.map((preset) => (
-                      <button key={`manual-${preset.id}`} type="button" onClick={() => void saveManualPreset(preset.id)} disabled={replacementSavingId === preset.id || !manualPresetDraft.streamUrl.trim()}>
-                        Salva su {preset.id}
+            <aside className="remote-side-column">
+              <div className="remote-card sources-card">
+                <h2>Sorgenti</h2>
+                <div className="source-button-list">
+                  {availableSources.length === 0 ? <p className="hint">Aggiorna le sorgenti dalle impostazioni.</p> : availableSources.map((source, index) => {
+                    const selectable = isSelectableSource(source);
+                    return (
+                      <button key={`${source.source}-${source.sourceAccount}-${index}`} type="button" onClick={() => void selectRemoteSource(source)} disabled={!selectable || !canSend} title={selectable ? `Seleziona ${getSourceLabel(source)}` : 'Non selezionabile via API locale'}>
+                        <span>{getSourceLabel(source)}</span>
+                        <small>{selectable ? 'Seleziona' : 'Non selezionabile'}</small>
                       </button>
-                    ))}
-                  </div>
-                  <button type="button" onClick={() => void testArbitraryStream(manualPresetDraft.streamUrl, 1000)} disabled={!manualPresetDraft.streamUrl.trim()}>Test manuale</button>
-                  {replacementStreamChecks[1000] ? (
-                    <div className={`stream-status ${replacementStreamChecks[1000].potentiallyPlayable ? 'ok' : 'error'}`}>
-                      <span>{replacementStreamChecks[1000].potentiallyPlayable ? 'stream potenzialmente valido' : 'verifica non conclusiva'}</span>
-                      <small>{replacementStreamChecks[1000].mimeType ?? replacementStreamChecks[1000].error ?? `HTTP ${replacementStreamChecks[1000].status ?? 'n/d'}`}</small>
-                      {replacementStreamChecks[1000].finalUrl ? <small>final URL: {replacementStreamChecks[1000].finalUrl}</small> : null}
-                    </div>
-                  ) : null}
+                    );
+                  })}
                 </div>
+              </div>
 
-                <div className="radio-results-list">
-                  {radioSearchResults.map((station, index) => (
-                    <article key={`${station.streamUrl}-${index}`} className="radio-result-card">
-                      {station.favicon ? <img src={station.favicon} alt="" /> : <div className="preset-logo-placeholder">♫</div>}
-                      <div>
-                        <h3>{station.name}</h3>
-                        <p>{[station.country, station.language, station.codec, station.bitrate ? `${station.bitrate} kbps` : ''].filter(Boolean).join(' · ')}</p>
-                        <code>{station.streamUrl}</code>
-                        <small>{station.tags}</small>
-                      </div>
-                      <div className="result-actions">
-                        <button type="button" onClick={() => void testArbitraryStream(station.streamUrl, -index - 1)}>Test</button>
-                        <button type="button" className="primary-action" onClick={() => setSelectedStationForPreset(station)}>Assegna a preset</button>
-                      </div>
-                      {replacementStreamChecks[-index - 1] ? (
-                        <div className={`stream-status ${replacementStreamChecks[-index - 1].potentiallyPlayable ? 'ok' : 'error'}`}>
-                          <span>{replacementStreamChecks[-index - 1].potentiallyPlayable ? 'stream potenzialmente valido' : 'verifica non conclusiva'}</span>
-                          <small>{replacementStreamChecks[-index - 1].mimeType ?? replacementStreamChecks[-index - 1].error ?? `HTTP ${replacementStreamChecks[-index - 1].status ?? 'n/d'}`}</small>
-                          {replacementStreamChecks[-index - 1].finalUrl ? <small>final URL: {replacementStreamChecks[-index - 1].finalUrl}</small> : null}
-                        </div>
-                      ) : null}
-                    </article>
-                  ))}
-                </div>
-              </section>
+              <div className="remote-card settings-card">
+                <h2>Impostazioni</h2>
+                <label htmlFor="remote-ip">IP Bose</label>
+                <input id="remote-ip" value={boseIp} onChange={(event) => setBoseIp(event.target.value)} onBlur={() => window.localStorage.setItem(LAST_IP_STORAGE_KEY, boseIp)} placeholder="192.168.1.50" inputMode="decimal" />
+                <button type="button" onClick={discoverDevices} disabled={discovering}>{discovering ? 'Ricerca…' : 'Cerca dispositivo'}</button>
+                <button type="button" onClick={realtimeConnected ? disconnectRealtime : connectRealtime} disabled={!canSend}>{realtimeConnected ? 'Realtime off' : 'Realtime on'}</button>
+                <button type="button" onClick={() => void forceRefreshRest('telecomando', true)} disabled={!canSend}>Aggiorna stato</button>
+                <a href="/dashboard/diagnostics">Diagnostica avanzata</a>
+              </div>
             </aside>
           </div>
 
-          {selectedStationForPreset ? (
-            <div className="modal-backdrop" role="presentation" onClick={() => setSelectedStationForPreset(null)}>
-              <section className="preset-modal" role="dialog" aria-modal="true" aria-label="Assegna radio a preset" onClick={(event) => event.stopPropagation()}>
+          {editingPresetId ? (
+            <div className="modal-backdrop" role="presentation" onClick={() => setEditingPresetId(null)}>
+              <section className="preset-modal remote-edit-modal" role="dialog" aria-modal="true" aria-label="Modifica preset" onClick={(event) => event.stopPropagation()}>
                 <div className="section-title-row">
                   <div>
-                    <h2>Assegna a preset</h2>
-                    <p className="hint">{selectedStationForPreset.name}</p>
+                    <p className="eyebrow">Preset {editingPresetId}</p>
+                    <h2>Modifica preset</h2>
                   </div>
-                  <button type="button" onClick={() => setSelectedStationForPreset(null)}>Chiudi</button>
+                  <button type="button" onClick={() => setEditingPresetId(null)}>Chiudi</button>
                 </div>
-                <code>{selectedStationForPreset.streamUrl || 'stream URL mancante'}</code>
-                <div className="preset-picker-grid">
-                  {replacementPresets.map((preset) => (
-                    <button key={`assign-${preset.id}`} type="button" onClick={() => void assignPresetFromStation(preset.id, selectedStationForPreset)} disabled={!selectedStationForPreset.streamUrl || replacementSavingId === preset.id}>
-                      <strong>{preset.id}</strong>
-                      <span>{preset.name}</span>
-                    </button>
-                  ))}
+                <label>Nome preset<input value={manualPresetDraft.name} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, name: event.target.value }))} placeholder="Nome radio" /></label>
+                <label>Stream URL<input value={manualPresetDraft.streamUrl} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, streamUrl: event.target.value }))} placeholder="http:// o https://" /></label>
+                <label>Logo URL opzionale<input value={manualPresetDraft.logoUrl} onChange={(event) => setManualPresetDraft((prev) => ({ ...prev, logoUrl: event.target.value }))} placeholder="https://…" /></label>
+
+                <div className="modal-search-box">
+                  <h3>Ricerca radio web</h3>
+                  <form className="radio-search-form" onSubmit={(event) => { event.preventDefault(); void searchRadios(); }}>
+                    <input className="big-search-input" value={radioSearchQuery} onChange={(event) => setRadioSearchQuery(event.target.value)} placeholder="Cerca una radio…" />
+                    <div className="search-filter-row">
+                      <input value={radioSearchCountry} onChange={(event) => setRadioSearchCountry(event.target.value)} placeholder="Paese" />
+                      <input value={radioSearchTag} onChange={(event) => setRadioSearchTag(event.target.value)} placeholder="Tag" />
+                    </div>
+                    <button type="submit" disabled={radioSearchLoading}>{radioSearchLoading ? 'Cerco…' : 'Cerca'}</button>
+                    {radioSearchError ? <p className="error-text">{radioSearchError}</p> : null}
+                  </form>
+                  <div className="modal-radio-results">
+                    {radioSearchResults.slice(0, 8).map((station, index) => (
+                      <button key={`${station.streamUrl}-${index}`} type="button" onClick={() => useStationInPresetEditor(station)}>
+                        <strong>{station.name}</strong>
+                        <small>{[station.country, station.codec, station.bitrate ? `${station.bitrate} kbps` : ''].filter(Boolean).join(' · ')}</small>
+                      </button>
+                    ))}
+                  </div>
                 </div>
+
+                <div className="modal-action-row">
+                  <button type="button" onClick={() => void testArbitraryStream(manualPresetDraft.streamUrl, 1000)} disabled={!manualPresetDraft.streamUrl.trim()}>Test stream</button>
+                  <button type="button" className="primary-action" onClick={() => void saveEditingPreset()} disabled={replacementSavingId === editingPresetId || !manualPresetDraft.streamUrl.trim()}>{replacementSavingId === editingPresetId ? 'Salvo…' : 'Salva'}</button>
+                </div>
+                {replacementStreamChecks[1000] ? (
+                  <div className={`stream-status ${replacementStreamChecks[1000].potentiallyPlayable ? 'ok' : 'error'}`}>
+                    <span>{replacementStreamChecks[1000].potentiallyPlayable ? 'Stream valido' : 'Verifica non conclusiva'}</span>
+                    <small>{replacementStreamChecks[1000].mimeType ?? replacementStreamChecks[1000].error ?? `HTTP ${replacementStreamChecks[1000].status ?? 'n/d'}`}</small>
+                  </div>
+                ) : null}
               </section>
             </div>
           ) : null}
