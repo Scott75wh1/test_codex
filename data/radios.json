@@ -1,0 +1,23 @@
+[
+  {
+    "id": "radio-paradise-main",
+    "name": "Radio Paradise Main Mix",
+    "genre": "Eclectic",
+    "homepage": "https://radioparadise.com/",
+    "streamUrl": "https://stream.radioparadise.com/aac-320"
+  },
+  {
+    "id": "somafm-groove-salad",
+    "name": "SomaFM Groove Salad",
+    "genre": "Downtempo",
+    "homepage": "https://somafm.com/groovesalad/",
+    "streamUrl": "https://ice1.somafm.com/groovesalad-128-mp3"
+  },
+  {
+    "id": "bbc-world-service",
+    "name": "BBC World Service",
+    "genre": "News",
+    "homepage": "https://www.bbc.co.uk/worldserviceradio",
+    "streamUrl": "https://stream.live.vc.bbcmedia.co.uk/bbc_world_service"
+  }
+]
