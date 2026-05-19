@@ -1,7 +1,11 @@
 import express from 'express';
 import WebSocket from 'ws';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, mkdtemp, rm, cp, readdir, stat } from 'node:fs/promises';
 import { existsSync, readFileSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import multer from 'multer';
+import AdmZip from 'adm-zip';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +26,12 @@ const ALLOWED_KEYS = new Set(['PLAY_PAUSE', 'STOP', 'VOLUME_UP', 'VOLUME_DOWN', 
 const KEY_SENDER = 'Gabbo';
 const KEY_RELEASE_DELAY_MS = 100;
 const REPLACEMENT_PRESET_COUNT = 6;
+const ADMIN_UPLOAD_LIMIT_BYTES = 100 * 1024 * 1024;
+const ADMIN_SERVICE_NAME = 'soundtouch.service';
+const ADMIN_PROJECT_ROOT = '/home/cris/soundtouch-radio-remote-final';
+const ADMIN_FRONTEND_DIST = path.join(ADMIN_PROJECT_ROOT, 'frontend', 'dist');
+const ADMIN_BACKUP_DIR = path.join(os.homedir(), 'soundtouch-backups');
+const execFileAsync = promisify(execFile);
 
 function replacementPresetsPath() {
   return path.join(__dirname, '..', 'data', 'replacement-presets.json');
@@ -735,6 +745,68 @@ function wait(ms) {
   });
 }
 
+function adminLog(action, details = '') {
+  console.log(`[admin] ${timestamp()} ${action}${details ? ` :: ${details}` : ''}`);
+}
+
+function requireAdminToken(req, res, next) {
+  const configured = String(process.env.ADMIN_TOKEN ?? '').trim();
+  const provided = String(req.header('x-admin-token') ?? req.query.adminToken ?? '').trim();
+  if (!configured || !provided || configured !== provided) {
+    adminLog('auth-denied', req.path);
+    return res.status(401).json({ error: 'Unauthorized admin token.' });
+  }
+  return next();
+}
+
+const adminUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: ADMIN_UPLOAD_LIMIT_BYTES }
+});
+
+function ensureValidZipBuffer(buffer) {
+  const zip = new AdmZip(buffer);
+  const entries = zip.getEntries();
+  if (!entries.length) {
+    throw new Error('ZIP vuoto o non valido.');
+  }
+  for (const entry of entries) {
+    const name = String(entry.entryName ?? '');
+    if (name.includes('..') || path.isAbsolute(name)) {
+      throw new Error('ZIP non valido: path traversal rilevato.');
+    }
+  }
+  return zip;
+}
+
+async function createAdminBackup() {
+  await mkdir(ADMIN_BACKUP_DIR, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const backupPath = path.join(ADMIN_BACKUP_DIR, `soundtouch-radio-remote-final-${stamp}.tar.gz`);
+  await execFileAsync('tar', ['-czf', backupPath, '-C', path.dirname(ADMIN_PROJECT_ROOT), path.basename(ADMIN_PROJECT_ROOT)]);
+  adminLog('backup-created', backupPath);
+  return backupPath;
+}
+
+async function restartService() {
+  await execFileAsync('sudo', ['systemctl', 'restart', ADMIN_SERVICE_NAME]);
+  adminLog('service-restart', ADMIN_SERVICE_NAME);
+}
+
+async function latestBackupPath() {
+  await mkdir(ADMIN_BACKUP_DIR, { recursive: true });
+  const items = await readdir(ADMIN_BACKUP_DIR);
+  const files = [];
+  for (const item of items) {
+    if (!item.endsWith('.tar.gz')) continue;
+    const full = path.join(ADMIN_BACKUP_DIR, item);
+    const st = await stat(full);
+    files.push({ full, mtimeMs: st.mtimeMs });
+  }
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return files[0]?.full ?? null;
+}
+
 async function postXmlToSoundTouch(ip, endpoint, xmlBody) {
   console.log(`[SoundTouch POST ${endpoint}] XML body: ${xmlBody}`);
 
@@ -1305,6 +1377,129 @@ app.post('/api/bose/:ip/key', async (req, res, next) => {
       return sendBridgePostError(res, error);
     }
 
+    return next(error);
+  }
+});
+
+app.use('/api/admin', requireAdminToken);
+
+app.get('/api/admin/status', async (_req, res, next) => {
+  try {
+    const distExists = existsSync(FRONTEND_DIST_DIR);
+    const distStat = distExists ? await stat(FRONTEND_DIST_DIR) : null;
+    return res.json({
+      service: 'running',
+      uptimeSeconds: Math.floor(process.uptime()),
+      nodeVersion: process.version,
+      projectPath: process.cwd(),
+      frontendDistExists: distExists,
+      frontendDistLastModified: distStat?.mtime?.toISOString() ?? null,
+      boseDefaultIp: process.env.BOSE_DEFAULT_IP ?? ''
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/admin/restart', async (_req, res, next) => {
+  try {
+    adminLog('restart-requested');
+    await restartService();
+    return res.json({ ok: true });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.get('/api/admin/logs', async (_req, res, next) => {
+  try {
+    adminLog('logs-requested');
+    const out = await execFileAsync('journalctl', ['-u', ADMIN_SERVICE_NAME, '-n', '100', '--no-pager']);
+    return res.type('text/plain').send(out.stdout || '');
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/admin/backup', async (_req, res, next) => {
+  try {
+    const backupPath = await createAdminBackup();
+    return res.json({ ok: true, backupPath });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/admin/upload-frontend', adminUpload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ error: 'File ZIP mancante.' });
+    adminLog('upload-frontend-start', req.file.originalname);
+    const zip = ensureValidZipBuffer(req.file.buffer);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'st-admin-frontend-'));
+    zip.extractAllTo(tmp, true);
+    const distCandidate = existsSync(path.join(tmp, 'dist')) ? path.join(tmp, 'dist') : path.join(tmp, path.basename(ADMIN_FRONTEND_DIST));
+    if (!existsSync(distCandidate)) return res.status(400).json({ error: 'ZIP non contiene cartella dist/.' });
+    const backupPath = await createAdminBackup();
+    await rm(ADMIN_FRONTEND_DIST, { recursive: true, force: true });
+    await mkdir(path.dirname(ADMIN_FRONTEND_DIST), { recursive: true });
+    await cp(distCandidate, ADMIN_FRONTEND_DIST, { recursive: true });
+    await restartService();
+    await rm(tmp, { recursive: true, force: true });
+    return res.json({ ok: true, backupPath });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/admin/upload-project', adminUpload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ error: 'File ZIP mancante.' });
+    adminLog('upload-project-start', req.file.originalname);
+    const zip = ensureValidZipBuffer(req.file.buffer);
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'st-admin-project-'));
+    zip.extractAllTo(tmp, true);
+    const backupPath = await createAdminBackup();
+    for (const entry of ['server', 'data', 'package.json']) {
+      const src = path.join(tmp, entry);
+      if (existsSync(src)) {
+        const dst = path.join(ADMIN_PROJECT_ROOT, entry);
+        await rm(dst, { recursive: true, force: true });
+        await cp(src, dst, { recursive: true });
+      }
+    }
+    const srcDist = path.join(tmp, 'frontend', 'dist');
+    if (existsSync(srcDist)) {
+      await rm(path.join(ADMIN_PROJECT_ROOT, 'frontend', 'dist'), { recursive: true, force: true });
+      await cp(srcDist, path.join(ADMIN_PROJECT_ROOT, 'frontend', 'dist'), { recursive: true });
+    }
+    await execFileAsync('npm', ['install'], { cwd: ADMIN_PROJECT_ROOT });
+    await restartService();
+    await rm(tmp, { recursive: true, force: true });
+    return res.json({ ok: true, backupPath });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/admin/install', async (_req, res, next) => {
+  try {
+    adminLog('install-requested');
+    const out = await execFileAsync('npm', ['install'], { cwd: ADMIN_PROJECT_ROOT });
+    return res.json({ ok: true, stdout: out.stdout, stderr: out.stderr });
+  } catch (error) {
+    return next(error);
+  }
+});
+
+app.post('/api/admin/restore-last-backup', async (_req, res, next) => {
+  try {
+    const backupPath = await latestBackupPath();
+    if (!backupPath) return res.status(404).json({ error: 'Nessun backup disponibile.' });
+    adminLog('restore-start', backupPath);
+    await execFileAsync('tar', ['-xzf', backupPath, '-C', path.dirname(ADMIN_PROJECT_ROOT)]);
+    await restartService();
+    return res.json({ ok: true, backupPath });
+  } catch (error) {
     return next(error);
   }
 });

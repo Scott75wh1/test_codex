@@ -287,3 +287,28 @@ Conclusione operativa: i preset radio legacy sembrano dipendere da una risoluzio
 ## Note SoundTouch
 
 Il backend restituisce XML quando il dispositivo Bose risponde con XML sugli endpoint REST. Gli errori di validazione o di rete sono restituiti in JSON per semplificare il debug dalla dashboard. Il bridge realtime usa SSE verso il frontend e mostra sempre gli XML/eventi raw ricevuti dal WebSocket Bose.
+
+## Admin Deploy API (protetta da token)
+
+Il backend espone endpoint di amministrazione sotto `/api/admin/*`.
+Tutte le rotte admin richiedono header `x-admin-token` uguale a `ADMIN_TOKEN` nel file `.env`.
+
+### Variabili ambiente
+- `ADMIN_TOKEN=` token obbligatorio per usare le rotte admin.
+
+### Endpoint admin
+- `GET /api/admin/status` stato servizio/processo e presenza build frontend.
+- `POST /api/admin/restart` esegue `sudo systemctl restart soundtouch.service`.
+- `GET /api/admin/logs` legge ultimi 100 log (`journalctl -u soundtouch.service -n 100 --no-pager`).
+- `POST /api/admin/backup` crea backup in `~/soundtouch-backups/`.
+- `POST /api/admin/upload-frontend` upload ZIP multipart (`file`) con `dist/`, backup + deploy + restart.
+- `POST /api/admin/upload-project` upload ZIP multipart (`file`), aggiorna `server`, `data`, `package.json`, `frontend/dist` se presenti, poi `npm install` + restart.
+- `POST /api/admin/install` esegue solo `npm install` nella root progetto remoto.
+- `POST /api/admin/restore-last-backup` ripristina ultimo backup e riavvia il servizio.
+
+### Sicurezza implementata
+- Nessuna esecuzione di comandi arbitrari dal frontend.
+- Solo comandi whitelist via `execFile`.
+- Upload limitato a 100MB.
+- Validazione ZIP base (niente path traversal).
+- Log operazioni admin su stdout backend.
